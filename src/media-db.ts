@@ -199,9 +199,11 @@ export async function inspectMedia(file: File): Promise<Omit<MediaAsset, 'id' | 
 
 /**
  * 抽取视频第一帧并编码为 JPEG，用于设置中的壁纸列表预览；失败时返回 undefined，不阻断导入。
+ * `source` 可以是 Blob，也可以是 file:// 等可直接播放的地址（大文件走地址，避免读进内存）。
  */
-export async function captureVideoPreview(source: Blob, maxWidth = PREVIEW_MAX_WIDTH): Promise<Blob | undefined> {
-  const url = URL.createObjectURL(source);
+export async function captureVideoPreview(source: Blob | string, maxWidth = PREVIEW_MAX_WIDTH): Promise<Blob | undefined> {
+  const isUrl = typeof source === 'string';
+  const url = isUrl ? source : URL.createObjectURL(source);
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
@@ -223,15 +225,16 @@ export async function captureVideoPreview(source: Blob, maxWidth = PREVIEW_MAX_W
   } finally {
     video.removeAttribute('src');
     video.load();
-    URL.revokeObjectURL(url);
+    if (!isUrl) URL.revokeObjectURL(url);
   }
 }
 
 /**
  * 把图片等比缩放为小尺寸 JPEG，用于 Wallpaper Engine 播放列表的已播预览缓存。
  */
-export async function captureImagePreview(source: Blob, maxWidth = PREVIEW_MAX_WIDTH): Promise<Blob | undefined> {
-  const url = URL.createObjectURL(source);
+export async function captureImagePreview(source: Blob | string, maxWidth = PREVIEW_MAX_WIDTH): Promise<Blob | undefined> {
+  const isUrl = typeof source === 'string';
+  const url = isUrl ? source : URL.createObjectURL(source);
   try {
     const image = await loadImage(url);
     if (!image.naturalWidth || !image.naturalHeight) return undefined;
@@ -246,7 +249,7 @@ export async function captureImagePreview(source: Blob, maxWidth = PREVIEW_MAX_W
       canvas.toBlob((blob) => resolve(blob ?? undefined), 'image/jpeg', 0.75);
     });
   } finally {
-    URL.revokeObjectURL(url);
+    if (!isUrl) URL.revokeObjectURL(url);
   }
 }
 

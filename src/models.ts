@@ -44,6 +44,11 @@ export interface MediaAsset {
   source?: IconSource;
   domain?: string;
   blob: Blob;
+  /**
+   * 直接从磁盘读取的地址（file://）。设置后播放时不再走 Blob，
+   * 由浏览器流式读取，避免把上 GB 的视频一次性读进内存。
+   */
+  sourceUrl?: string;
 }
 
 export interface Shortcut {

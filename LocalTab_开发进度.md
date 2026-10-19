@@ -1,6 +1,6 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.6）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.7）
 
 **记录日期：** 2026-10-19
 
@@ -320,6 +320,16 @@
 7. 用桩替换 `chrome.extension.isAllowedFileSchemeAccess` 与 `XMLHttpRequest` 在 Vite 预览回归：开关返回 false 时提示精确文案且不读取媒体；开关返回 true 且读取成功时状态行 `display: none`；两种状态下 `showDirectoryPicker` 调用次数均为 0。
 8. 文档新增 FR-02-14 与 AT-48；`npx tsc -b` 与 `npm run build` 通过。
 
+## 本次修改记录（任务书 3.7）
+
+1. 定位“经常报背景不存在”的真正原因：旧实现用 XHR 把整个媒体文件读成 Blob 再播放，而本机播放列表里有 57 个文件超过 150 MB、10 个超过 500 MB、最大 1715 MB，整文件读入内存会失败，被当成“文件不存在”。
+2. 视频/图片改为 `file://` 直连流式播放：`MediaAsset` 新增 `sourceUrl`，`renderBackdrop()` 直接用该地址赋给 `<video>`/`<img>`，由浏览器按需读取，不再整文件载入内存；Blob 仅用于本地媒体库导入的条目。
+3. `releaseActiveUrl()` 只回收自己创建的 Blob URL，`file://` 地址不再被 `revokeObjectURL`，避免误释放导致后续切换失败。
+4. 场景包 `.pkg` 仍需整包交给 WebWallGL 解析，保留 XHR 读取；失败时先 `verifyDirectChannel()` 复核，再提示“文件可能已被移动或过大”，不再误报未授权。
+5. 预览生成支持地址来源：`captureVideoPreview()` / `captureImagePreview()` 接受 `Blob | string`，从 `file://` 地址解码首帧时不再创建 Blob URL，成功缓存预览后仍以项目预览图优先。
+6. 播放失败恢复流程改为先复核通道：权限/开关被关闭时立即停止重试并说明原因；通道正常时提示“该背景无法播放（文件可能已被移动或格式不受支持），已切换到其他背景”，连续 3 次失败才回退默认背景。
+7. 用全量配置核对确认：891 条媒体路径中仅 1 条在磁盘上确实缺失（`431960/3307056610/scene.pkg`），其余 890 条均存在且无 0 字节文件；因此“大量不存在”属于读取方式问题，而非配置问题。
+8. 文档新增 FR-02-15 与 AT-49，文档版本升至 3.7；`npx tsc -b` 与 `npm run build` 通过。
 ## 本地运行与安装
 
 1. 安装 Node.js LTS。

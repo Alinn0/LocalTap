@@ -2,7 +2,7 @@ import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset
 import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, replacePlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
 import { ICON_SOURCES, clearIconCache, fetchAndCacheIcon, getCachedIcon, hasIconPermission, iconCacheId, normalizedDomain, purgeLegacyUploadedIcons, requestIconPermission } from './icon-resolver';
 import { loadSettings, saveSettings } from './storage';
-import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview } from './wallpaper-engine';
+import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
 import './style.css';
 
 const BACKUP_SCHEMA_VERSION = 3;
@@ -114,7 +114,7 @@ async function start(): Promise<void> {
     playlistEntries = await listPlaylistEntries();
     await purgeLegacyUploadedIcons();
     // 先确认“允许访问文件网址”开关与小文件可读性，避免首帧渲染前误显示提示。
-    if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length) {
+    if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length && IS_EXTENSION_CONTEXT) {
       await refreshFileSchemeState();
       if (fileSchemeAllowed !== false) await probeChannelWithSmallFile();
     }
@@ -520,6 +520,11 @@ function updateWeStatus(): void {
     return;
   }
   // 只有确认“读不到文件”时才提示，避免每开一个标签页都显示授权说明。
+  if (!IS_EXTENSION_CONTEXT) {
+    weStatus.hidden = false;
+    weStatus.textContent = '当前是开发预览页面（http 地址），浏览器禁止网页读取本地文件；请在已加载的扩展新标签页中查看真实效果。';
+    return;
+  }
   weStatus.hidden = directReadState !== 'failed';
   if (weStatus.hidden) return;
   const neededPath = wallpaperEngineRelativeRoot();
@@ -723,6 +728,8 @@ function chooseRandomWallpaperEngineEntry(): WallpaperEngineEntry | undefined {
 
 /** 不做状态标记的直读，用于探测与回退判断。 */
 async function rawDirectRead(path: string): Promise<File | undefined> {
+  // 预览环境（http 页面）被浏览器禁止读取 file://，直接返回避免刷屏报错。
+  if (!IS_EXTENSION_CONTEXT) return undefined;
   try {
     return await readLocalFileViaProtocol(path);
   } catch {
@@ -789,14 +796,21 @@ async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'aut
   if (options.reason !== 'auto') notify(localFileHint());
 }
 
+/** 是否为已加载的扩展页面（chrome-extension:// 或具备 runtime.id）。 */
+const IS_EXTENSION_CONTEXT = location.protocol === 'chrome-extension:' ||
+  Boolean((globalThis as { chrome?: { runtime?: { id?: string } } }).chrome?.runtime?.id);
+
 function localFileHint(): string {
+  if (!IS_EXTENSION_CONTEXT) {
+    return '当前是开发预览页面：浏览器禁止普通网页读取本地文件（file://），请用已加载的扩展打开新标签页测试。';
+  }
   if (fileSchemeAllowed === false) {
     return 'Chrome 的“允许访问文件网址”当前是关闭的：请在 chrome://extensions 打开本扩展详情页勾选该项，再点击“检测文件直读”。';
   }
-  if (directReadState === 'failed') {
-    return '读不到本地背景文件。请点击“检测文件直读”重新确认一次。';
+  if (directReadState === 'ok') {
+    return '这张背景读取失败（文件可能已被移动或删除），已尝试切换到其他背景。';
   }
-  return '这张背景读取失败（文件可能已被移动或删除），已尝试切换到其他背景。';
+  return '读不到本地背景文件。请点击“检测文件直读”重新确认一次。';
 }
 
 async function playWallpaperEngineEntry(entryId: string, options: { silent?: boolean }): Promise<boolean> {
@@ -811,29 +825,47 @@ async function loadWallpaperEngineAsset(entryId: string, options: { silent?: boo
   const entry = playlistEntries.find((item) => item.id === entryId);
   if (!entry) return false;
   const mediaPath = mediaPathForEntry(entry.path);
-  const file = await tryDirectRead(mediaPath);
-  if (!file) {
-    // 读取失败可能是该文件被移走，也可能是权限被关掉：用已知可读的文件复核。
-    await verifyDirectChannel();
-    updateWeStatus();
-    if (!options.silent) notify(localFileHint());
-    return false;
-  }
   const token = ++weLoadToken;
+  let asset: MediaAsset;
+  if (entry.kind === 'scene') {
+    // 场景包必须整包交给 WebWallGL 解析；视频/图片则改用 file:// 直连流式播放。
+    const file = await tryDirectRead(mediaPath);
+    if (!file) {
+      await verifyDirectChannel();
+      updateWeStatus();
+      if (!options.silent) notify(localFileHint());
+      return false;
+    }
+    asset = {
+      id: entry.id,
+      name: entry.name,
+      type: file.type || mimeForPlaylistKind(entry.kind, entry.name),
+      kind: entry.kind,
+      size: file.size,
+      importedAt: Date.now(),
+      hash: entry.id,
+      width: 0,
+      height: 0,
+      blob: file,
+    };
+  } else {
+    const type = mimeForPlaylistKind(entry.kind, entry.name);
+    asset = {
+      id: entry.id,
+      name: entry.name,
+      type,
+      kind: entry.kind,
+      size: 0,
+      importedAt: Date.now(),
+      hash: entry.id,
+      width: 0,
+      height: 0,
+      blob: new Blob([], { type }),
+      sourceUrl: toFileUrl(mediaPath),
+    };
+  }
   const metadata = await readProjectMetadata(entry.path);
   if (metadata) await applyWallpaperEngineMetadata(entry.id, metadata);
-  const asset: MediaAsset = {
-    id: entry.id,
-    name: entry.name,
-    type: file.type || mimeForPlaylistKind(entry.kind, entry.name),
-    kind: entry.kind,
-    size: file.size,
-    importedAt: Date.now(),
-    hash: entry.id,
-    width: 0,
-    height: 0,
-    blob: file,
-  };
   if (token !== weLoadToken) return false;
   settings.previousWallpaperEngineId = settings.currentWallpaperEngineId;
   settings.currentWallpaperEngineId = entry.id;
@@ -854,11 +886,11 @@ function markWallpaperEnginePlayed(entryId: string): void {
     })
     .catch((error: unknown) => console.warn(`保存已播地址失败：${errorMessage(error)}`));
   if (currentWeAsset?.id === entryId && entry.kind !== 'scene') {
-    void cacheWallpaperEnginePreview(entryId, currentWeAsset.blob);
+    void cacheWallpaperEnginePreview(entryId, currentWeAsset.sourceUrl ?? currentWeAsset.blob);
   }
 }
 
-async function cacheWallpaperEnginePreview(entryId: string, source: Blob): Promise<void> {
+async function cacheWallpaperEnginePreview(entryId: string, source: Blob | string): Promise<void> {
   if (wePreviewJobs.has(entryId)) return;
   const entry = playlistEntries.find((item) => item.id === entryId);
   if (!entry || entry.previewFromProject) return;
@@ -986,6 +1018,10 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
 async function probeDirectFileAccess(): Promise<void> {
   if (!playlistEntries.length) {
     notify('请先选择 Wallpaper Engine 配置。');
+    return;
+  }
+  if (!IS_EXTENSION_CONTEXT) {
+    notify('当前是开发预览页面，浏览器禁止网页读取本地文件；请在已加载的扩展新标签页中测试。');
     return;
   }
   await refreshFileSchemeState();
@@ -1324,10 +1360,11 @@ function renderBackdrop(): void {
     renderPlaybackStatus();
     return;
   }
-  activeObjectUrl = URL.createObjectURL(current.blob);
+  activeObjectUrl = current.sourceUrl ? undefined : URL.createObjectURL(current.blob);
+  const source = current.sourceUrl ?? activeObjectUrl!;
   if (current.kind === 'image') {
     const image = document.createElement('img');
-    image.src = activeObjectUrl;
+    image.src = source;
     image.alt = '';
     image.onload = () => {
       if (activeBackgroundAsset()?.id !== current.id) return;
@@ -1340,7 +1377,7 @@ function renderBackdrop(): void {
     return;
   }
   const video = document.createElement('video');
-  video.src = activeObjectUrl;
+  video.src = source;
   video.autoplay = true;
   video.muted = true;
   video.loop = true;
@@ -1694,14 +1731,25 @@ async function recoverFailedMedia(failedId: string): Promise<void> {
   if (settings.backgroundSource === 'wallpaper-engine') {
     if (settings.currentWallpaperEngineId !== failedId) return;
     renderAttempt += 1;
+    // 先确认通道：权限/开关被关掉时不再空转，直接说明原因。
+    if (!(await verifyDirectChannel())) {
+      currentWeAsset = undefined;
+      settings.currentWallpaperEngineId = null;
+      renderAll();
+      await persist();
+      updateWeStatus();
+      notify(localFileHint());
+      return;
+    }
     if (renderAttempt >= 3 || playlistEntries.length === 0) {
       currentWeAsset = undefined;
       settings.currentWallpaperEngineId = null;
       renderAll();
       await persist();
-      notify('播放列表中的媒体无法播放，已回退到默认背景。');
+      notify('连续多个背景无法播放（文件可能已被移动或格式不受支持），已回退到默认背景。');
       return;
     }
+    notify('该背景无法播放（文件可能已被移动或格式不受支持），已切换到其他背景。');
     await playRandomWallpaperEngineEntry({ reason: 'recover' });
     return;
   }
