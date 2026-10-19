@@ -66,6 +66,8 @@ let weLoadToken = 0;
 let mediaListEmptyShouldShow = false;
 let directReadState: 'unknown' | 'ok' | 'failed' = 'unknown';
 let lastDirectPath: string | undefined;
+/** Chrome 的“允许访问文件网址”开关状态；undefined 表示当前环境无法查询。 */
+let fileSchemeAllowed: boolean | undefined;
 const wePreviewJobs = new Set<string>();
 
 type SceneRendererResponse =
@@ -74,12 +76,48 @@ type SceneRendererResponse =
   | { type: 'scene-error' | 'scene-preview-error'; token: string; message: string }
   | { type: 'scene-preview'; token: string; bytes: ArrayBuffer };
 
+/**
+ * 查询 Chrome 的“允许访问文件网址”开关。
+ * 这是扩展 API，不受页面 origin 限制；预览环境没有该 API 时返回 undefined。
+ */
+async function queryFileSchemeAllowed(): Promise<boolean | undefined> {
+  type FileAccessApi = ((callback?: (allowed: boolean) => void) => Promise<boolean> | void);
+  const api = (globalThis as { chrome?: { extension?: { isAllowedFileSchemeAccess?: FileAccessApi } } })
+    .chrome?.extension?.isAllowedFileSchemeAccess;
+  if (typeof api !== 'function') return undefined;
+  try {
+    const result = api();
+    if (result && typeof (result as Promise<boolean>).then === 'function') {
+      return await (result as Promise<boolean>);
+    }
+  } catch {
+    // 某些版本只接受回调形式，继续走下面的回调路径。
+  }
+  return new Promise<boolean | undefined>((resolve) => {
+    try {
+      api((allowed) => resolve(Boolean(allowed)));
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
+async function refreshFileSchemeState(): Promise<void> {
+  fileSchemeAllowed = await queryFileSchemeAllowed();
+  if (fileSchemeAllowed === false) directReadState = 'failed';
+}
+
 async function start(): Promise<void> {
   try {
     settings = await loadSettings();
     media = (await listAssets()).filter((asset) => asset.kind !== 'icon');
     playlistEntries = await listPlaylistEntries();
     await purgeLegacyUploadedIcons();
+    // 先确认“允许访问文件网址”开关与小文件可读性，避免首帧渲染前误显示提示。
+    if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length) {
+      await refreshFileSchemeState();
+      if (fileSchemeAllowed !== false) await probeChannelWithSmallFile();
+    }
     await pickMediaOnStartup();
     setupEvents();
     applySettingsToControls();
@@ -472,17 +510,25 @@ function updateWeStatus(): void {
   const played = playedWallpaperEngineEntries();
   weRandomButton.disabled = playlistEntries.length === 0;
   clearWePlayedButton.disabled = played.length === 0;
-  weStatus.hidden = directReadState === 'ok' || settings.backgroundSource !== 'wallpaper-engine';
-  if (weStatus.hidden) return;
+  if (settings.backgroundSource !== 'wallpaper-engine') {
+    weStatus.hidden = true;
+    return;
+  }
   if (playlistEntries.length === 0) {
+    weStatus.hidden = false;
     weStatus.textContent = '尚未读取 Wallpaper Engine 配置。点击“选择 WE 配置”读取 config.json 中的 playlist.items 地址。';
     return;
   }
+  // 只有确认“读不到文件”时才提示，避免每开一个标签页都显示授权说明。
+  weStatus.hidden = directReadState !== 'failed';
+  if (weStatus.hidden) return;
   const neededPath = wallpaperEngineRelativeRoot();
   const needed = neededPath ? `（需要读取 ${neededPath}）` : '';
-  weStatus.textContent = directReadState === 'failed'
-    ? `浏览器未允许读取本地文件${needed}。请在 chrome://extensions 打开本扩展的“允许访问文件网址”，然后点击“检测文件直读”；读取一次后长期有效。`
-    : `已读取 ${playlistEntries.length} 个背景${needed}。请在 chrome://extensions 打开本扩展的“允许访问文件网址”，然后点击“检测文件直读”；读取一次后长期有效。`;
+  if (fileSchemeAllowed === false) {
+    weStatus.textContent = `Chrome 的“允许访问文件网址”当前是关闭的${needed}：请在 chrome://extensions 打开本扩展的详情页勾选该项，然后点击“检测文件直读”确认。`;
+    return;
+  }
+  weStatus.textContent = `读不到本地背景文件${needed}。若已在 chrome://extensions 打开本扩展的“允许访问文件网址”，请点击“检测文件直读”重新确认一次。`;
 }
 
 async function persist(): Promise<void> {
@@ -687,16 +733,21 @@ async function rawDirectRead(path: string): Promise<File | undefined> {
 /**
  * 走 file:// 直读（需用户开启“允许访问文件网址”）。
  * 单次读取失败可能只是该文件被删除或路径失效，不能据此判定通道不可用，
- * 所以这里不做“失败即永久禁用”的处理，状态降级只由“检测文件直读”的完整探测决定。
+ * 所以这里不做“失败即永久禁用”的处理，状态降级只由小文件探测决定。
  */
 async function tryDirectRead(path: string): Promise<File | undefined> {
   const file = await rawDirectRead(path);
   if (file) {
     directReadState = 'ok';
-    lastDirectPath = path;
+    // 只把体积小的文件记为通道样本，避免后续复核时重复读取上百 MB 的场景包。
+    if (isSmallProbePath(path)) lastDirectPath = path;
     return file;
   }
   return undefined;
+}
+
+function isSmallProbePath(path: string): boolean {
+  return /\.(?:json|jpe?g|png|webp|gif)$/i.test(path);
 }
 
 const directFileReader = (path: string): Promise<Blob | undefined> => tryDirectRead(path);
@@ -739,11 +790,13 @@ async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'aut
 }
 
 function localFileHint(): string {
-  if (directReadState === 'ok') return '背景文件读取失败：配置里的路径可能已被移动或删除，请检查 Wallpaper Engine 播放列表。';
-  if (directReadState === 'failed') {
-    return '浏览器未允许读取本地文件。请在 chrome://extensions 打开本扩展的“允许访问文件网址”，再点“检测文件直读”。';
+  if (fileSchemeAllowed === false) {
+    return 'Chrome 的“允许访问文件网址”当前是关闭的：请在 chrome://extensions 打开本扩展详情页勾选该项，再点击“检测文件直读”。';
   }
-  return '无法读取背景文件，请点击“检测文件直读”确认本地文件权限。';
+  if (directReadState === 'failed') {
+    return '读不到本地背景文件。请点击“检测文件直读”重新确认一次。';
+  }
+  return '这张背景读取失败（文件可能已被移动或删除），已尝试切换到其他背景。';
 }
 
 async function playWallpaperEngineEntry(entryId: string, options: { silent?: boolean }): Promise<boolean> {
@@ -927,74 +980,46 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
 }
 
 /**
- * 检测 file:// 直读是否可用。只有在“多个候选文件全部读不到”时才判定为不可用，
- * 避免因为个别文件缺失（例如已删除的工程）把已经生效的权限误判成未授权。
+ * 检测 file:// 直读是否可用。先查询 Chrome 的“允许访问文件网址”开关，
+ * 再只用小文件（project.json / 预览图）探测，连续多个都读不到才判定不可用。
  */
 async function probeDirectFileAccess(): Promise<void> {
   if (!playlistEntries.length) {
     notify('请先选择 Wallpaper Engine 配置。');
     return;
   }
-  const previous = directReadState;
-  let probeName = '';
-  const candidates = buildProbeCandidates();
-  for (const path of candidates) {
-    const file = await rawDirectRead(path);
-    if (!file) continue;
-    directReadState = 'ok';
-    lastDirectPath = path;
-    probeName = path.slice(path.lastIndexOf('/') + 1);
-    break;
-  }
-  if (directReadState !== 'ok') {
-    // 之前已确认可读时不降级：本次可能只是抽样文件都不存在。
-    if (previous === 'ok') {
-      directReadState = 'ok';
-      updateWeStatus();
-      notify('文件读取仍可用；本次抽样的文件都不存在，请检查配置里的路径是否已被移动或删除。');
-      return;
-    }
+  await refreshFileSchemeState();
+  if (fileSchemeAllowed === false) {
     directReadState = 'failed';
     updateWeStatus();
-    notify('本地文件读取不可用：请在 chrome://extensions 打开本扩展的“允许访问文件网址”，重新加载扩展后再试。');
+    notify('Chrome 的“允许访问文件网址”当前是关闭的：请在 chrome://extensions 打开本扩展详情页勾选该项。');
     return;
   }
+  const previous = directReadState;
+  const result = await probeChannelWithSmallFile();
   updateWeStatus();
   renderMediaList();
-  notify(`本地文件读取已生效（已读取 ${probeName}），之后不再需要授权。`);
-  if (settings.backgroundSource === 'wallpaper-engine') {
-    await playRandomWallpaperEngineEntry({ reason: 'manual' });
-  }
-}
-
-/**
- * 复核 file:// 通道是否仍然可用：优先重读上次成功的文件。
- * 成功说明只是当前文件缺失，失败才判定权限被关闭。
- */
-async function verifyDirectChannel(): Promise<boolean> {
-  if (lastDirectPath) {
-    const probe = await rawDirectRead(lastDirectPath);
-    if (probe) {
-      directReadState = 'ok';
-      return true;
+  if (result === 'ok') {
+    notify('本地文件读取正常，无需在 chrome://extensions 重新授权。');
+    if (settings.backgroundSource === 'wallpaper-engine') {
+      await playRandomWallpaperEngineEntry({ reason: 'manual' });
     }
+    return;
   }
-  const fallback = buildProbeCandidates().find((path) => path !== lastDirectPath);
-  if (fallback) {
-    const probe = await rawDirectRead(fallback);
-    if (probe) {
-      directReadState = 'ok';
-      lastDirectPath = fallback;
-      return true;
-    }
+  if (previous === 'ok') {
+    directReadState = 'ok';
+    updateWeStatus();
+    notify('文件读取仍可用；本次抽样的小文件都不存在，请检查配置里的路径是否已被移动或删除。');
+    return;
   }
   directReadState = 'failed';
-  return false;
+  updateWeStatus();
+  notify('本地文件读取不可用：请在 chrome://extensions 打开本扩展的“允许访问文件网址”，重新加载扩展后再试。');
 }
 
 /**
- * 探测候选：优先已成功读过的路径，其次同目录 project.json（体积最小），
- * 再次已播过的非场景媒体，最后才用场景包，避免为探测读取上百 MB 的包。
+ * 探测候选（只选小文件）：已播条目的 project.json → 预览图 → 非场景媒体。
+ * 绝不把 scene.pkg（可能上千 MB）当作探测样本，避免大文件读取失败被误判成权限丢失。
  */
 function buildProbeCandidates(): string[] {
   const paths: string[] = [];
@@ -1007,17 +1032,65 @@ function buildProbeCandidates(): string[] {
   if (lastDirectPath) push(lastDirectPath);
   const played = playlistEntries.filter((entry) => entry.playedAt);
   const ordered = [...played, ...playlistEntries];
-  for (const entry of ordered.slice(0, 10)) {
+  for (const entry of ordered.slice(0, 20)) {
     const slash = entry.path.lastIndexOf('/');
     if (slash > 0) push(`${entry.path.slice(0, slash)}/project.json`);
+    if (entry.previewFile && slash > 0) push(`${entry.path.slice(0, slash)}/${entry.previewFile}`);
   }
   for (const entry of ordered) {
-    if (entry.kind !== 'scene') push(mediaPathForEntry(entry.path));
-  }
-  for (const entry of ordered) {
-    if (entry.kind === 'scene') push(mediaPathForEntry(entry.path));
+    if (entry.kind === 'video' || entry.kind === 'image') push(mediaPathForEntry(entry.path));
   }
   return paths.slice(0, 8);
+}
+
+/**
+ * 用小文件探测通道状态。
+ * - 任一成功 → 可用
+ * - 连续 3 个不同的小文件都失败 → 判定权限不可用
+ * - 否则维持未知（不误报）
+ */
+async function probeChannelWithSmallFile(): Promise<'ok' | 'unknown' | 'failed'> {
+  const candidates = buildProbeCandidates();
+  let tried = 0;
+  for (const path of candidates) {
+    if (tried >= 4) break;
+    tried += 1;
+    const probe = await rawDirectRead(path);
+    if (probe) {
+      directReadState = 'ok';
+      lastDirectPath = path;
+      return 'ok';
+    }
+  }
+  // 刚重新加载扩展时首个 file:// 请求偶发失败，稍后重试一次再下结论。
+  if (tried > 0) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    const retry = await rawDirectRead(candidates[0]);
+    if (retry) {
+      directReadState = 'ok';
+      lastDirectPath = candidates[0];
+      return 'ok';
+    }
+  }
+  if (tried >= 3) {
+    directReadState = 'failed';
+    return 'failed';
+  }
+  return directReadState;
+}
+
+/**
+ * 复核 file:// 通道是否仍然可用。只读小文件，成功即说明“只是当前背景缺失”，
+ * 从而避免因为播放到被删除的条目或大体积场景包而误报“未授权”。
+ */
+async function verifyDirectChannel(): Promise<boolean> {
+  if (directReadState === 'ok') {
+    // 已确认可用时，只有连续小文件探测失败才降级。
+    if (!lastDirectPath) return true;
+    const probe = await rawDirectRead(lastDirectPath);
+    if (probe) return true;
+  }
+  return (await probeChannelWithSmallFile()) === 'ok';
 }
 
 async function clearPlayedWallpaperEngineEntries(): Promise<void> {

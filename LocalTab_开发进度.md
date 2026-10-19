@@ -1,6 +1,6 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.5）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.6）
 
 **记录日期：** 2026-10-19
 
@@ -308,6 +308,17 @@
 6. 移除 `src/fs-access.d.ts`（不再需要 File System Access 权限方法类型）。
 7. 用可切换的 XHR 桩在 Vite 预览中回归：连续点击“随机换一张”8 次，`showDirectoryPicker` 调用计数为 **0**、无任何权限弹窗；读取成功时状态行保持 `display: none`；把读取全部改为失败后点“检测文件直读”出现“浏览器未允许读取本地文件…”提示；恢复读取后点“随机换一张”立即恢复播放并使提示隐藏。
 8. `npx tsc -b` 与 `npm run build` 通过。
+
+## 本次修改记录（任务书 3.6）
+
+1. 定位“用着用着就要重新授权”的误报来源：`directReadState` 只存在于单个标签页内存中，新标签页初始为 `unknown` 时状态区会显示“请在 chrome://extensions 打开…”；同时旧的探测会把 `scene.pkg`（单个可达 531 MB）当样本，大文件读取失败时被当作“权限丢失”，于是看起来像是需要重新授权。
+2. 探测改为只读小文件：`buildProbeCandidates()` 只收集 `project.json`、项目预览图与非场景媒体，**不再用 `scene.pkg` 作探测样本**；`tryDirectRead()` 只把小文件记为通道样本（`lastDirectPath`），避免复核时重复读取上百 MB 的场景包。
+3. 新增 `probeChannelWithSmallFile()`：最多 4 个小文件候选，任一成功即判定可用；连续 3 个不同候选失败才判定不可用；全部失败后延时 300 ms 重试一次，规避重新加载扩展后首个 `file://` 请求偶发失败。
+4. 新增 `chrome.extension.isAllowedFileSchemeAccess()` 查询（同时兼容 Promise 与回调形式），把提示区分为“Chrome 的‘允许访问文件网址’当前是关闭的”与“读不到本地背景文件”，让用户能立刻判断是开关被关还是文件缺失。
+5. 状态区改为“仅确认不可用时显示”：通道可用或尚未探测时整行隐藏，不再每次打开新标签页都显示授权说明；启动时先探测一次通道再渲染。
+6. `probeDirectFileAccess()` 先查开关再探测，成功时提示“本地文件读取正常，无需在 chrome://extensions 重新授权”，不再统一提示“去打开开关”。
+7. 用桩替换 `chrome.extension.isAllowedFileSchemeAccess` 与 `XMLHttpRequest` 在 Vite 预览回归：开关返回 false 时提示精确文案且不读取媒体；开关返回 true 且读取成功时状态行 `display: none`；两种状态下 `showDirectoryPicker` 调用次数均为 0。
+8. 文档新增 FR-02-14 与 AT-48；`npx tsc -b` 与 `npm run build` 通过。
 
 ## 本地运行与安装
 
