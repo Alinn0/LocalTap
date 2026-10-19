@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>LocalTab</title>
+  </head>
+  <body>
+    <div id="backdrop" class="backdrop" aria-hidden="true"></div>
+    <main class="page">
+      <header class="topbar">
+        <p class="brand"><span class="brand-mark">L</span> LocalTab</p>
+        <button id="settings-toggle" class="icon-button" type="button" aria-label="打开设置" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8 4.7v-2.4l-2-.7a6.3 6.3 0 0 0-.6-1.4l.9-1.9-1.7-1.7-1.9.9a6.3 6.3 0 0 0-1.4-.6l-.7-2h-2.4l-.7 2a6.3 6.3 0 0 0-1.4.6l-1.9-.9-1.7 1.7.9 1.9a6.3 6.3 0 0 0-.6 1.4l-2 .7v2.4l2 .7a6.3 6.3 0 0 0 .6 1.4l-.9 1.9 1.7 1.7 1.9-.9a6.3 6.3 0 0 0 1.4.6l.7 2h2.4l.7-2a6.3 6.3 0 0 0 1.4-.6l1.9.9 1.7-1.7-.9-1.9a6.3 6.3 0 0 0 .6-1.4l2-.7Z"/></svg>
+        </button>
+      </header>
+
+      <section class="hero" aria-label="搜索和快捷方式">
+        <form id="search-form" class="search">
+          <label class="sr-only" for="search-input">搜索引擎搜索</label>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.2 4.2"/></svg>
+          <input id="search-input" type="search" placeholder="搜索网络，按 Enter" autocomplete="off" />
+          <span class="search-hint">↵</span>
+        </form>
+        <div id="shortcuts" class="shortcuts" aria-label="快捷方式"></div>
+        <p id="welcome" class="welcome" hidden>导入一张壁纸或添加快捷方式，开始打造你的新标签页。</p>
+      </section>
+
+      <p id="import-status" class="import-status" role="status" aria-live="polite" hidden></p>
+
+      <footer id="wallpaper-bar" class="footer">
+        <div id="playback-controls" class="playback-controls">
+          <button id="previous-media" class="text-button" type="button" aria-label="上一张壁纸">‹</button>
+          <button id="toggle-playback" class="text-button" type="button" aria-label="暂停壁纸">Ⅱ</button>
+          <button id="next-media" class="text-button" type="button" aria-label="下一张壁纸">›</button>
+        </div>
+        <button id="toggle-controls" class="text-button collapse-toggle" type="button" aria-expanded="true" aria-controls="playback-controls" aria-label="折叠壁纸控制栏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+        </button>
+      </footer>
+    </main>
+
+    <aside id="settings-panel" class="settings-panel" aria-label="LocalTab 设置" hidden>
+      <div class="panel-heading">
+        <div><p class="eyebrow">PERSONALIZE</p><h1>设置</h1></div>
+        <button id="settings-close" class="icon-button" type="button" aria-label="关闭设置">×</button>
+      </div>
+
+      <section class="panel-section">
+        <div class="section-heading"><div><h2>壁纸与背景</h2><p id="media-count" class="muted">尚未导入媒体</p></div><span class="section-icon">▧</span></div>
+        <label class="field-row" for="background-source">
+          <span>背景来源</span>
+          <select id="background-source">
+            <option value="library">本地媒体库（上传 / 文件夹）</option>
+            <option value="wallpaper-engine">Wallpaper Engine 播放列表</option>
+          </select>
+        </label>
+        <div id="library-controls">
+          <label class="dropzone" id="dropzone">
+            <input id="media-input" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.pkg" multiple />
+            <span class="upload-mark">＋</span>
+            <span><strong>导入图片、视频或 Wallpaper Engine 场景包</strong><small>支持 JPEG、PNG、WebP、MP4、WebM 和 PKGV .pkg · 大小受浏览器本地存储配额限制</small></span>
+          </label>
+          <input id="folder-input" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.pkg" webkitdirectory directory multiple hidden />
+          <div class="media-actions">
+            <button id="choose-folder" class="small-button" type="button" aria-controls="folder-input">选择文件夹</button>
+            <button id="clear-media" class="small-button danger-button" type="button" disabled>清除所有壁纸</button>
+          </div>
+        </div>
+        <div id="we-controls" hidden>
+          <p id="we-status" class="source-note" role="status" aria-live="polite">尚未读取 Wallpaper Engine 配置。</p>
+          <div class="media-actions">
+            <button id="choose-we-config" class="small-button" type="button">选择 WE 配置</button>
+            <button id="we-probe" class="small-button" type="button">检测文件直读</button>
+          </div>
+          <div class="media-actions">
+            <button id="we-random" class="small-button" type="button">随机换一张</button>
+            <button id="clear-we-played" class="small-button danger-button" type="button" disabled>清除已播记录</button>
+          </div>
+          <input id="we-config-input" type="file" accept="application/json,.json" hidden />
+        </div>
+        <div id="media-list-heading" class="section-heading media-list-heading">
+          <span id="media-list-count" class="muted">壁纸列表</span>
+          <button id="toggle-media-list" class="small-button collapse-list-button" type="button" aria-expanded="true" aria-controls="media-list">折叠</button>
+        </div>
+        <input id="media-search" class="media-search" type="search" placeholder="搜索已导入壁纸" aria-label="搜索已导入壁纸" autocomplete="off" />
+        <div id="media-list" class="item-list"></div>
+        <p id="media-list-empty" class="empty-list" hidden>没有匹配的壁纸。</p>
+        <div class="field-row">
+          <label for="playback-mode">播放模式</label>
+          <select id="playback-mode">
+            <option value="random">随机播放</option>
+            <option value="order">顺序播放</option>
+            <option value="fixed">固定当前</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="switch-interval">自动切换间隔（分钟）</label>
+          <input id="switch-interval" type="number" min="1" max="1440" step="1" value="30" />
+        </div>
+        <p class="source-note">随机/顺序模式按此时长切换；视频播放结束会循环，不会提前切换。固定当前模式不会自动切换。</p>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-heading"><div><h2>快捷方式</h2><p id="shortcut-count" class="muted">0 / 18</p></div><button id="add-shortcut" class="small-button" type="button">＋ 添加</button></div>
+        <div id="shortcut-manager" class="item-list"></div>
+        <label class="field-row icon-source-row" for="icon-source">
+          <span>图标来源</span>
+          <select id="icon-source">
+            <option value="browser">Chrome 内置</option>
+            <option value="domestic">国内源 · 百度</option>
+            <option value="international">国际源 · Google</option>
+          </select>
+        </label>
+        <p class="source-note">Chrome 内置来源从浏览器图标库解析；百度/Google 来源会向所选服务发送快捷方式域名。结果缓存于本机，失败时显示首字母。首次使用需授权。</p>
+        <button id="refresh-icons" class="small-button" type="button">按当前来源重新获取图标</button>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-heading"><div><h2>搜索</h2><p class="muted">选择搜索框使用的搜索引擎</p></div></div>
+        <label class="field-row" for="search-engine">
+          <span>搜索引擎</span>
+          <select id="search-engine"></select>
+        </label>
+      </section>
+
+      <section class="panel-section backup-section">
+        <div class="section-heading">        <div><h2>配置备份</h2><p class="muted">导出快捷方式、设置与图标缓存，不包含媒体文件</p></div></div>
+        <div class="button-row">
+          <button id="export-backup" class="secondary-button" type="button">导出 JSON</button>
+          <label class="secondary-button import-button">导入 JSON<input id="import-backup" type="file" accept="application/json,.json" /></label>
+        </div>
+      </section>
+      <p class="privacy-note">本地优先 · 图标联网为可选 · 媒体数据留在本机</p>
+    </aside>
+
+    <dialog id="shortcut-dialog" class="editor-dialog">
+      <form id="shortcut-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">SHORTCUT</p><h2 id="dialog-title">添加快捷方式</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="关闭">×</button></div>
+        <input id="shortcut-id" type="hidden" />
+        <label class="input-field">名称<input id="shortcut-name" maxlength="40" required placeholder="例如：GitHub" /></label>
+        <label class="input-field">网址<input id="shortcut-url" type="url" required placeholder="https://example.com" /></label>
+        <p id="form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button id="cancel-edit" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">保存</button></div>
+      </form>
+    </dialog>
+    <dialog id="media-conflict-dialog" class="editor-dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">MEDIA CONFLICT</p><h2>壁纸名称或内容重复</h2></div></div>
+      <p id="media-conflict-name" class="source-note"></p>
+      <p class="source-note">所选操作将应用于本批次后续遇到的所有冲突。</p>
+      <div class="dialog-actions">
+        <button class="secondary-button" type="button" value="skip">跳过</button>
+        <button class="secondary-button" type="button" value="rename">重命名导入</button>
+        <button class="primary-button" type="button" value="overwrite">覆盖已有</button>
+      </div>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

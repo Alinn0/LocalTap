@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "LocalTab - 本地新标签页",
+  "version": "0.1.0",
+  "description": "离线优先的新标签页：本地壁纸、快捷方式与可迁移设置。",
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "file:///*"
+  ],
+  "optional_permissions": [
+    "favicon"
+  ],
+  "optional_host_permissions": [
+    "https://www.google.com/*",
+    "https://*.gstatic.com/*",
+    "https://favicon.baidubce.com/*"
+  ],
+  "sandbox": {
+    "pages": ["scene-renderer.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts; default-src 'self' blob: data:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; object-src 'self';"
+  }
+}
