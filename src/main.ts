@@ -1321,10 +1321,16 @@ function shuffleEntries<T>(items: T[]): T[] {
   return copy;
 }
 
+/** 是否已有任何可用壁纸：本地媒体库有导入，或播放列表里有背景。 */
+function hasAnyWallpaper(): boolean {
+  return media.length > 0 || playlistEntries.length > 0;
+}
+
 function renderShortcuts(): void {
   shortcutsRoot.replaceChildren();
+  // 只有全新状态（没有任何壁纸/背景，也没有快捷方式）才显示引导文案。
   const welcome = $('welcome') as HTMLElement;
-  welcome.hidden = settings.shortcuts.length > 0;
+  welcome.hidden = settings.shortcuts.length > 0 || hasAnyWallpaper();
   for (const shortcut of settings.shortcuts) {
     const link = document.createElement('a');
     link.className = 'shortcut-tile';

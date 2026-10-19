@@ -1,6 +1,6 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.8）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.9）
 
 **记录日期：** 2026-10-19
 
@@ -341,6 +341,13 @@
 7. 本机数据复核：`config.json` 891 条受支持媒体中仅 1 条缺失（`431960/3307056610/scene.pkg`，文件夹与 Steam 清单都不存在）；此前的“29 条缺失”是 PowerShell 以 ANSI 读取 UTF-8 造成的误判。
 8. 预览环境验证（桩替换 `chrome.runtime.id` 与 XHR）：导入 3 条测试配置后统计为“可用 2 · 缺失 1”，列表出现 ⚠ 缺失条目与 ↻ 按钮，标题为“背景列表（已播 0 · 缺失 1）”。
 9. 文档新增 FR-02-16 与 AT-50，版本升至 3.8；`npx tsc -b` 与 `npm run build` 通过。
+## 本次修改记录（任务书 3.9）
+
+1. 引导文案“导入一张壁纸或添加快捷方式，开始打造你的新标签页。”改为只在完全空白状态显示：原逻辑只看 `settings.shortcuts.length`，因此已导入壁纸但没有快捷方式时仍会显示。
+2. 新增 `hasAnyWallpaper()`：本地媒体库有导入媒体或播放列表有条目即为真；`renderShortcuts()` 用 `settings.shortcuts.length > 0 || hasAnyWallpaper()` 决定隐藏。
+3. `renderAll()` 会在导入媒体、导入 WE 配置、删除壁纸、增删快捷方式后调用 `renderShortcuts()`，所以状态变化即时生效。
+4. Vite 预览验证：全新状态文案可见；导入 1 条 WE 背景后文案 `display: none`；仅添加 1 个快捷方式后文案同样隐藏。
+5. 文档更新 FR-01 与新增 AT-51，版本升至 3.9；`npx tsc -b` 与 `npm run build` 通过。
 ## 本地运行与安装
 
 1. 安装 Node.js LTS。
