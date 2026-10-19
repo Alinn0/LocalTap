@@ -69,6 +69,10 @@ export interface WallpaperEngineEntry {
   previewFromProject?: boolean;
   playedAt?: number;
   preview?: Blob;
+  /** 播放时确认文件不可用（不存在或无法解码）；随机池会跳过这些条目。 */
+  missing?: boolean;
+  /** 上次存在性检查时间（毫秒），用于避免重复扫描。 */
+  checkedAt?: number;
 }
 
 export interface AppSettings {

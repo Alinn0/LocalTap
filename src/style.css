@@ -110,6 +110,8 @@ body.interaction-dismissed .shortcut-tile:hover .shortcut-icon, body.interaction
 .manage-row[draggable="true"] { cursor: grab; }
 .empty-list { color: var(--muted); font-size: 11px; }
 .empty-list[hidden] { display: none; }
+.media-row.is-missing { opacity: .62; }
+.media-row.is-missing .item-info small { color: #ffb0a7; }
 .backup-section { padding-bottom: 12px; }
 .button-row { display: flex; gap: 8px; }
 .secondary-button, .primary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 35px; padding: 0 12px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.07); color: #fff; }

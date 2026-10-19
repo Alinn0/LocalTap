@@ -97,6 +97,7 @@ export async function savePlaylistEntry(entry: WallpaperEngineEntry): Promise<vo
 
 /**
  * 用新配置的路径替换播放列表，同时按路径 ID 保留已播时间与预览图。
+ * 重新导入视为一次重新检查：清除 missing / checkedAt，让缺失条目重新参与检测。
  */
 export async function replacePlaylistEntries(entries: WallpaperEngineEntry[]): Promise<WallpaperEngineEntry[]> {
   const previous = await listPlaylistEntries();
@@ -104,7 +105,7 @@ export async function replacePlaylistEntries(entries: WallpaperEngineEntry[]): P
   const merged = entries.map((entry) => {
     const old = previousById.get(entry.id);
     return old
-      ? { ...entry, playedAt: old.playedAt, preview: old.preview }
+      ? { ...entry, playedAt: old.playedAt, preview: old.preview, previewFromProject: old.previewFromProject }
       : entry;
   });
   const db = await openDatabase();

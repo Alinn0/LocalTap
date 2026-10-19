@@ -301,6 +301,7 @@ function setupEvents(): void {
   });
   weRandomButton.addEventListener('click', () => void playRandomWallpaperEngineEntry({ reason: 'manual' }));
   $('we-probe').addEventListener('click', () => void probeDirectFileAccess());
+  $('we-check-missing').addEventListener('click', () => void checkMissingWallpaperEngineEntries({ force: true }));
   clearWePlayedButton.addEventListener('click', () => void clearPlayedWallpaperEngineEntries());
   mediaConflictDialog.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[value]');
@@ -611,21 +612,27 @@ function renderMediaList(): void {
 
 function renderWallpaperEngineList(): void {
   const played = playedWallpaperEngineEntries();
+  const missing = playlistEntries.filter((entry) => entry.missing);
+  const listed = [
+    ...played.filter((entry) => !entry.missing),
+    ...missing.sort((a, b) => (b.checkedAt ?? 0) - (a.checkedAt ?? 0)),
+  ];
+  const available = playlistEntries.length - missing.length;
   $('media-count').textContent = playlistEntries.length
-    ? `播放列表 ${playlistEntries.length} 项 · 已播 ${played.length} 项`
+    ? `播放列表 ${playlistEntries.length} 项 · 可用 ${available} 项${missing.length ? ` · 缺失 ${missing.length} 项` : ''}`
     : '尚未读取 Wallpaper Engine 配置';
   const query = mediaSearch.value.trim().toLocaleLowerCase();
   const visible = query
-    ? played.filter((entry) =>
+    ? listed.filter((entry) =>
       (entry.title ?? '').toLocaleLowerCase().includes(query) ||
       entry.name.toLocaleLowerCase().includes(query))
-    : played;
+    : listed;
   mediaListCount.textContent = query
-    ? `已播背景列表（${visible.length} / ${played.length} 项）`
-    : `已播背景列表（共 ${played.length} 项）`;
+    ? `背景列表（${visible.length} / ${listed.length} 项）`
+    : `背景列表（已播 ${played.filter((entry) => !entry.missing).length} · 缺失 ${missing.length}）`;
   if (!playlistEntries.length) {
     mediaListEmpty.textContent = '尚未读取 Wallpaper Engine 配置。';
-  } else if (!played.length) {
+  } else if (!listed.length) {
     mediaListEmpty.textContent = '还没有播放过的背景。点击“随机换一张”开始。';
   } else {
     mediaListEmpty.textContent = '没有匹配的背景。';
@@ -634,7 +641,7 @@ function renderWallpaperEngineList(): void {
   mediaListEmpty.hidden = !mediaListEmptyShouldShow;
   for (const entry of visible) {
     const row = document.createElement('div');
-    row.className = 'media-row';
+    row.className = entry.missing ? 'media-row is-missing' : 'media-row';
     const preview = document.createElement('div');
     preview.className = 'media-preview';
     if (entry.preview) {
@@ -642,7 +649,7 @@ function renderWallpaperEngineList(): void {
       mediaPreviewUrls.push(previewUrl);
       preview.style.backgroundImage = `url("${previewUrl}")`;
     } else {
-      preview.textContent = entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
+      preview.textContent = entry.missing ? '⚠' : entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
     }
     const info = document.createElement('div');
     info.className = 'item-info';
@@ -651,13 +658,14 @@ function renderWallpaperEngineList(): void {
     name.textContent = displayName;
     const detail = document.createElement('small');
     const kindLabel = entry.kind === 'video' ? '视频' : entry.kind === 'scene' ? '场景包' : '图片';
-    detail.textContent = `${kindLabel} · 已播放`;
+    detail.textContent = entry.missing ? `${kindLabel} · 缺失（文件不存在）` : `${kindLabel} · 已播放`;
     info.append(name, detail);
     const actions = document.createElement('div');
     actions.className = 'item-actions';
-    const play = createButton(entry.id === settings.currentWallpaperEngineId ? '✓' : '▶', `播放 ${displayName}`, 'media-play');
+    const play = createButton(entry.id === settings.currentWallpaperEngineId ? '✓' : entry.missing ? '↻' : '▶',
+      entry.missing ? `重试 ${displayName}` : `播放 ${displayName}`, 'media-play');
     play.dataset.playlistId = entry.id;
-    const remove = createButton('×', `从已播背景列表移除 ${displayName}`, 'media-delete');
+    const remove = createButton('×', `从背景列表移除 ${displayName}`, 'media-delete');
     remove.dataset.playlistId = entry.id;
     actions.append(play, remove);
     row.append(preview, info, actions);
@@ -719,11 +727,22 @@ function wallpaperEngineRelativeRoot(): string {
 
 function chooseRandomWallpaperEngineEntry(): WallpaperEngineEntry | undefined {
   if (!playlistEntries.length) return undefined;
+  const usable = availableWallpaperEngineEntries();
+  if (!usable.length) return undefined;
   const current = settings.currentWallpaperEngineId;
   const previous = settings.previousWallpaperEngineId;
-  const preferred = playlistEntries.filter((entry) => entry.id !== current && entry.id !== previous);
-  const pool = preferred.length ? preferred : playlistEntries.filter((entry) => entry.id !== current);
-  return pool[Math.floor(Math.random() * pool.length)] ?? playlistEntries[0];
+  const preferred = usable.filter((entry) => entry.id !== current && entry.id !== previous);
+  const pool = preferred.length ? preferred : usable.filter((entry) => entry.id !== current);
+  return pool[Math.floor(Math.random() * pool.length)] ?? usable[0];
+}
+
+/**
+ * 可参与随机播放的条目：排除已确认缺失的背景。
+ * 如果全部都被标记缺失（例如整个盘符被拔掉），退回完整列表以便重新探测。
+ */
+function availableWallpaperEngineEntries(): WallpaperEngineEntry[] {
+  const usable = playlistEntries.filter((entry) => !entry.missing);
+  return usable.length ? usable : playlistEntries;
 }
 
 /** 不做状态标记的直读，用于探测与回退判断。 */
@@ -779,8 +798,9 @@ async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'aut
     return;
   }
   const initialCurrent = settings.currentWallpaperEngineId;
-  const pool = shuffleEntries(playlistEntries.filter((entry) => entry.id !== initialCurrent));
-  const candidates = pool.length ? pool : shuffleEntries(playlistEntries.slice());
+  const usable = availableWallpaperEngineEntries();
+  const pool = shuffleEntries(usable.filter((entry) => entry.id !== initialCurrent));
+  const candidates = pool.length ? pool : shuffleEntries(usable.slice());
   let attempts = 0;
   for (const entry of candidates) {
     // 允许第一次尝试重新验证通道，之后再确认失败才提前结束。
@@ -794,6 +814,147 @@ async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'aut
   await persist();
   updateWeStatus();
   if (options.reason !== 'auto') notify(localFileHint());
+}
+
+/**
+ * 把条目标记为缺失并持久化；随机池会跳过它，直到重新检查或重新导入配置。
+ */
+async function markWallpaperEngineMissing(entryId: string, reason: string, refresh = true): Promise<void> {
+  const index = playlistEntries.findIndex((entry) => entry.id === entryId);
+  if (index < 0) return;
+  const entry = playlistEntries[index];
+  if (entry.missing) return;
+  const updated: WallpaperEngineEntry = { ...entry, missing: true, checkedAt: Date.now() };
+  playlistEntries[index] = updated;
+  try {
+    await savePlaylistEntry(updated);
+  } catch (error) {
+    console.warn(`保存缺失标记失败：${errorMessage(error)}`);
+  }
+  console.info(`标记背景缺失（${reason}）：${entry.path}`);
+  if (refresh) {
+    renderMediaList();
+    updateWeStatus();
+  }
+}
+
+/** 确认条目存在：清除缺失标记并记录检查时间。 */
+async function markWallpaperEnginePresent(entryId: string): Promise<void> {
+  const index = playlistEntries.findIndex((entry) => entry.id === entryId);
+  if (index < 0) return;
+  const entry = playlistEntries[index];
+  if (!entry.missing && entry.checkedAt) return;
+  const updated: WallpaperEngineEntry = { ...entry, missing: undefined, checkedAt: Date.now() };
+  playlistEntries[index] = updated;
+  try {
+    await savePlaylistEntry(updated);
+  } catch (error) {
+    console.warn(`保存检查结果失败：${errorMessage(error)}`);
+  }
+}
+
+const WE_CHECK_TIMEOUT_MS = 8000;
+const WE_CHECK_CONCURRENCY = 4;
+let weCheckRunning = false;
+
+/**
+ * 轻量存在性探测：视频只读元数据、图片只解码一次，不读取媒体内容。
+ * 场景包需要整包解析，这里不探测（改由播放失败时标记）。
+ */
+function probeWallpaperEngineEntry(entry: WallpaperEngineEntry): Promise<boolean | undefined> {
+  if (entry.kind === 'scene' || !IS_EXTENSION_CONTEXT) return Promise.resolve(undefined);
+  const url = toFileUrl(mediaPathForEntry(entry.path));
+  return new Promise((resolve) => {
+    let settled = false;
+    const element = entry.kind === 'video'
+      ? document.createElement('video')
+      : new Image();
+    const finish = (exists: boolean | undefined): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      element.removeAttribute('src');
+      if (element instanceof HTMLVideoElement) element.load();
+      resolve(exists);
+    };
+    const timer = window.setTimeout(() => finish(undefined), WE_CHECK_TIMEOUT_MS);
+    if (element instanceof HTMLVideoElement) {
+      element.preload = 'metadata';
+      element.muted = true;
+      element.addEventListener('loadedmetadata', () => finish(true), { once: true });
+      element.addEventListener('error', () => finish(false), { once: true });
+    } else {
+      element.addEventListener('load', () => finish(true), { once: true });
+      element.addEventListener('error', () => finish(false), { once: true });
+    }
+    element.src = url;
+  });
+}
+
+/**
+ * 检查播放列表条目的文件是否存在，并把结果标记到条目上。
+ * `force` 为真时重新检查全部非场景条目，否则只检查尚未检查过的。
+ */
+async function checkMissingWallpaperEngineEntries(options: { force?: boolean; silent?: boolean } = {}): Promise<void> {
+  if (!playlistEntries.length || weCheckRunning) return;
+  if (!IS_EXTENSION_CONTEXT) {
+    if (!options.silent) notify('当前是开发预览页面，无法检查本地文件。');
+    return;
+  }
+  if (!(await verifyDirectChannel())) {
+    updateWeStatus();
+    if (!options.silent) notify(localFileHint());
+    return;
+  }
+  const targets = playlistEntries.filter((entry) => entry.kind !== 'scene' && (options.force || !entry.checkedAt));
+  if (!targets.length) {
+    if (!options.silent) notify('所有背景都已检查过；如需重新检查，请再点一次“检查缺失”。');
+    return;
+  }
+  weCheckRunning = true;
+  const queue = targets.slice();
+  const total = queue.length;
+  let done = 0;
+  let missingCount = 0;
+  let restoredCount = 0;
+  const reportProgress = (): void => {
+    if (!options.silent) showImportStatus(`正在检查背景：${done}/${total}\n已发现缺失：${missingCount}`);
+  };
+  reportProgress();
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const entry = queue.shift();
+      if (!entry) return;
+      const exists = await probeWallpaperEngineEntry(entry);
+      done += 1;
+      if (exists === false) {
+        if (!entry.missing) {
+          missingCount += 1;
+          await markWallpaperEngineMissing(entry.id, '检查时未找到文件', false);
+        }
+      } else if (exists === true && entry.missing) {
+        restoredCount += 1;
+        await markWallpaperEnginePresent(entry.id);
+      }
+      if (done % 5 === 0 || done === total) reportProgress();
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(WE_CHECK_CONCURRENCY, total) }, () => worker()));
+  } catch (error) {
+    console.warn(`检查背景完整性失败：${errorMessage(error)}`);
+  } finally {
+    weCheckRunning = false;
+    renderMediaList();
+    updateWeStatus();
+  }
+  if (options.silent) return;
+  hideImportStatus();
+  const parts = [`已检查 ${total} 项`];
+  if (missingCount) parts.push(`新发现 ${missingCount} 项缺失（已从随机播放中排除）`);
+  if (restoredCount) parts.push(`${restoredCount} 项已恢复`);
+  if (!missingCount && !restoredCount) parts.push('全部存在');
+  notify(`${parts.join('，')}。场景包需整包解析，未参与本次检查。`);
 }
 
 /** 是否为已加载的扩展页面（chrome-extension:// 或具备 runtime.id）。 */
@@ -831,9 +992,14 @@ async function loadWallpaperEngineAsset(entryId: string, options: { silent?: boo
     // 场景包必须整包交给 WebWallGL 解析；视频/图片则改用 file:// 直连流式播放。
     const file = await tryDirectRead(mediaPath);
     if (!file) {
-      await verifyDirectChannel();
+      const channelOk = await verifyDirectChannel();
       updateWeStatus();
-      if (!options.silent) notify(localFileHint());
+      if (channelOk) {
+        await markWallpaperEngineMissing(entry.id, '读取场景包失败');
+        if (!options.silent) notify('该场景包读取失败（文件可能已被移动或过大），已标记为缺失并跳过。');
+      } else if (!options.silent) {
+        notify(localFileHint());
+      }
       return false;
     }
     asset = {
@@ -1006,6 +1172,8 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
       : '';
     notify(`已读取 ${parsed.entries.length} 个背景${skipped}。`);
     void enterWallpaperEngineMode();
+    // 导入后自动检查一次文件是否存在，把缺失项从随机播放中排除。
+    void checkMissingWallpaperEngineEntries();
   } catch (error) {
     notify(`读取 Wallpaper Engine 配置失败：${errorMessage(error)}`);
   }
@@ -1749,7 +1917,8 @@ async function recoverFailedMedia(failedId: string): Promise<void> {
       notify('连续多个背景无法播放（文件可能已被移动或格式不受支持），已回退到默认背景。');
       return;
     }
-    notify('该背景无法播放（文件可能已被移动或格式不受支持），已切换到其他背景。');
+    await markWallpaperEngineMissing(failedId, '播放失败');
+    notify('该背景无法播放（文件可能已被移动或格式不受支持），已标记为缺失并切换到其他背景。');
     await playRandomWallpaperEngineEntry({ reason: 'recover' });
     return;
   }
