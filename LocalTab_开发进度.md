@@ -1,6 +1,6 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 3.9）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 4.0）
 
 **记录日期：** 2026-10-19
 
@@ -348,6 +348,14 @@
 3. `renderAll()` 会在导入媒体、导入 WE 配置、删除壁纸、增删快捷方式后调用 `renderShortcuts()`，所以状态变化即时生效。
 4. Vite 预览验证：全新状态文案可见；导入 1 条 WE 背景后文案 `display: none`；仅添加 1 个快捷方式后文案同样隐藏。
 5. 文档更新 FR-01 与新增 AT-51，版本升至 3.9；`npx tsc -b` 与 `npm run build` 通过。
+## 本次修改记录（任务书 4.0）
+
+1. “已播背景列表”改为只显示已播放且可用的条目：`missing`（文件不存在或无法播放）的条目不再出现在列表中，仅在统计行体现为“已跳过 N 项”，同时移除了缺失条目的 ⚠ 图标、↻ 重试按钮与 `.media-row.is-missing` 样式。
+2. 修复 × 无效的问题：原实现只把 `playedAt`/`preview` 清空，缺失条目本身仍留在 `playlistEntries`（其原因是缺失条目曾被强制列在列表尾部），看起来像“点了没删”。现在 `handleMediaAction()` 调用新增的 `deletePlaylistEntry()` 从 IndexedDB 播放列表仓库彻底删除该记录，并同步从内存列表移除。
+3. 删除当前正在播放的背景时，同时清空 `currentWallpaperEngineId` / `previousWallpaperEngineId` 与 `currentWeAsset`，背景回退到默认渐变。
+4. 列表标题恢复为“已播背景列表（共 N 项）”。
+5. Vite 预览实测：3 条测试配置（1 条路径不存在）中，把条目写成已播 + 1 条 `missing` 后，列表只显示 2 条可用条目，统计为“播放列表 3 项 · 可用 2 项 · 已跳过 1 项”；点击 × 后内存与 IndexedDB 均降为 2 条，提示“已从背景列表删除：DitfWall.mp4（共 2 项）”。
+6. 文档新增 FR-02-17 与 AT-52，版本升至 4.0；`npx tsc -b` 与 `npm run build` 通过。
 ## 本地运行与安装
 
 1. 安装 Node.js LTS。

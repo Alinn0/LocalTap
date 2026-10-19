@@ -1,5 +1,5 @@
 import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
-import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, replacePlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
+import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, deletePlaylistEntry, formatBytes, inspectMedia, listAssets, listPlaylistEntries, replacePlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
 import { ICON_SOURCES, clearIconCache, fetchAndCacheIcon, getCachedIcon, hasIconPermission, iconCacheId, normalizedDomain, purgeLegacyUploadedIcons, requestIconPermission } from './icon-resolver';
 import { loadSettings, saveSettings } from './storage';
 import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
@@ -611,28 +611,25 @@ function renderMediaList(): void {
 }
 
 function renderWallpaperEngineList(): void {
-  const played = playedWallpaperEngineEntries();
-  const missing = playlistEntries.filter((entry) => entry.missing);
-  const listed = [
-    ...played.filter((entry) => !entry.missing),
-    ...missing.sort((a, b) => (b.checkedAt ?? 0) - (a.checkedAt ?? 0)),
-  ];
-  const available = playlistEntries.length - missing.length;
+  // 只列出“已播放且可用”的背景；缺失/无法播放的条目直接从列表中隐藏。
+  const played = playedWallpaperEngineEntries().filter((entry) => !entry.missing);
+  const hidden = playlistEntries.filter((entry) => entry.missing);
+  const available = playlistEntries.length - hidden.length;
   $('media-count').textContent = playlistEntries.length
-    ? `播放列表 ${playlistEntries.length} 项 · 可用 ${available} 项${missing.length ? ` · 缺失 ${missing.length} 项` : ''}`
+    ? `播放列表 ${playlistEntries.length} 项 · 可用 ${available} 项${hidden.length ? ` · 已跳过 ${hidden.length} 项` : ''}`
     : '尚未读取 Wallpaper Engine 配置';
   const query = mediaSearch.value.trim().toLocaleLowerCase();
   const visible = query
-    ? listed.filter((entry) =>
+    ? played.filter((entry) =>
       (entry.title ?? '').toLocaleLowerCase().includes(query) ||
       entry.name.toLocaleLowerCase().includes(query))
-    : listed;
+    : played;
   mediaListCount.textContent = query
-    ? `背景列表（${visible.length} / ${listed.length} 项）`
-    : `背景列表（已播 ${played.filter((entry) => !entry.missing).length} · 缺失 ${missing.length}）`;
+    ? `已播背景列表（${visible.length} / ${played.length} 项）`
+    : `已播背景列表（共 ${played.length} 项）`;
   if (!playlistEntries.length) {
     mediaListEmpty.textContent = '尚未读取 Wallpaper Engine 配置。';
-  } else if (!listed.length) {
+  } else if (!played.length) {
     mediaListEmpty.textContent = '还没有播放过的背景。点击“随机换一张”开始。';
   } else {
     mediaListEmpty.textContent = '没有匹配的背景。';
@@ -641,7 +638,7 @@ function renderWallpaperEngineList(): void {
   mediaListEmpty.hidden = !mediaListEmptyShouldShow;
   for (const entry of visible) {
     const row = document.createElement('div');
-    row.className = entry.missing ? 'media-row is-missing' : 'media-row';
+    row.className = 'media-row';
     const preview = document.createElement('div');
     preview.className = 'media-preview';
     if (entry.preview) {
@@ -649,7 +646,7 @@ function renderWallpaperEngineList(): void {
       mediaPreviewUrls.push(previewUrl);
       preview.style.backgroundImage = `url("${previewUrl}")`;
     } else {
-      preview.textContent = entry.missing ? '⚠' : entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
+      preview.textContent = entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
     }
     const info = document.createElement('div');
     info.className = 'item-info';
@@ -658,12 +655,11 @@ function renderWallpaperEngineList(): void {
     name.textContent = displayName;
     const detail = document.createElement('small');
     const kindLabel = entry.kind === 'video' ? '视频' : entry.kind === 'scene' ? '场景包' : '图片';
-    detail.textContent = entry.missing ? `${kindLabel} · 缺失（文件不存在）` : `${kindLabel} · 已播放`;
+    detail.textContent = `${kindLabel} · 已播放`;
     info.append(name, detail);
     const actions = document.createElement('div');
     actions.className = 'item-actions';
-    const play = createButton(entry.id === settings.currentWallpaperEngineId ? '✓' : entry.missing ? '↻' : '▶',
-      entry.missing ? `重试 ${displayName}` : `播放 ${displayName}`, 'media-play');
+    const play = createButton(entry.id === settings.currentWallpaperEngineId ? '✓' : '▶', `播放 ${displayName}`, 'media-play');
     play.dataset.playlistId = entry.id;
     const remove = createButton('×', `从背景列表移除 ${displayName}`, 'media-delete');
     remove.dataset.playlistId = entry.id;
@@ -1843,12 +1839,17 @@ async function handleMediaAction(event: Event): Promise<void> {
       await playWallpaperEngineEntry(entry.id, {});
       return;
     }
-    const updated: WallpaperEngineEntry = { ...entry, playedAt: undefined, preview: undefined };
-    playlistEntries[index] = updated;
-    await savePlaylistEntry(updated);
-    renderMediaList();
-    updateWeStatus();
-    notify(`已从已播背景列表移除：${entry.name}`);
+    // × 直接从播放列表中删除该条目（不只是清空已播标记）。
+    await deletePlaylistEntry(entry.id);
+    playlistEntries = playlistEntries.filter((item) => item.id !== entry.id);
+    if (settings.currentWallpaperEngineId === entry.id) {
+      settings.currentWallpaperEngineId = null;
+      settings.previousWallpaperEngineId = null;
+      currentWeAsset = undefined;
+    }
+    await persist();
+    renderAll();
+    notify(`已从背景列表删除：${wallpaperEngineDisplayName(entry)}（共 ${playlistEntries.length} 项）`);
     return;
   }
   const asset = media.find((item) => item.id === button.dataset.id);

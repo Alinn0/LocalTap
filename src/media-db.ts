@@ -95,6 +95,11 @@ export async function savePlaylistEntry(entry: WallpaperEngineEntry): Promise<vo
   await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.put(entry));
 }
 
+/** 从播放列表彻底删除一条背景记录。 */
+export async function deletePlaylistEntry(id: string): Promise<void> {
+  await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.delete(id));
+}
+
 /**
  * 用新配置的路径替换播放列表，同时按路径 ID 保留已播时间与预览图。
  * 重新导入视为一次重新检查：清除 missing / checkedAt，让缺失条目重新参与检测。
