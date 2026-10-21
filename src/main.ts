@@ -301,7 +301,6 @@ function setupEvents(): void {
   });
   weRandomButton.addEventListener('click', () => void playRandomWallpaperEngineEntry({ reason: 'manual' }));
   $('we-probe').addEventListener('click', () => void probeDirectFileAccess());
-  $('we-check-missing').addEventListener('click', () => void checkMissingWallpaperEngineEntries({ force: true }));
   clearWePlayedButton.addEventListener('click', () => void clearPlayedWallpaperEngineEntries());
   mediaConflictDialog.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[value]');
@@ -531,10 +530,10 @@ function updateWeStatus(): void {
   const neededPath = wallpaperEngineRelativeRoot();
   const needed = neededPath ? `（需要读取 ${neededPath}）` : '';
   if (fileSchemeAllowed === false) {
-    weStatus.textContent = `Chrome 的“允许访问文件网址”当前是关闭的${needed}：请在 chrome://extensions 打开本扩展的详情页勾选该项，然后点击“检测文件直读”确认。`;
+    weStatus.textContent = `Chrome 的“允许访问文件网址”当前是关闭的${needed}：请在 chrome://extensions 打开本扩展的详情页勾选该项，然后点击“获取权限”确认。`;
     return;
   }
-  weStatus.textContent = `读不到本地背景文件${needed}。若已在 chrome://extensions 打开本扩展的“允许访问文件网址”，请点击“检测文件直读”重新确认一次。`;
+  weStatus.textContent = `读不到本地背景文件${needed}。若已在 chrome://extensions 打开本扩展的“允许访问文件网址”，请点击“获取权限”重新确认一次。`;
 }
 
 async function persist(): Promise<void> {
@@ -888,33 +887,24 @@ function probeWallpaperEngineEntry(entry: WallpaperEngineEntry): Promise<boolean
 }
 
 /**
- * 检查播放列表条目的文件是否存在，并把结果标记到条目上。
- * `force` 为真时重新检查全部非场景条目，否则只检查尚未检查过的。
+ * 导入配置后在后台检查文件是否存在，把缺失的条目标记下来并从随机池与列表中跳过。
+ * 没有手动入口：缺失即跳过，不做额外提示。
  */
-async function checkMissingWallpaperEngineEntries(options: { force?: boolean; silent?: boolean } = {}): Promise<void> {
-  if (!playlistEntries.length || weCheckRunning) return;
-  if (!IS_EXTENSION_CONTEXT) {
-    if (!options.silent) notify('当前是开发预览页面，无法检查本地文件。');
-    return;
-  }
+async function checkMissingWallpaperEngineEntries(): Promise<void> {
+  if (!playlistEntries.length || weCheckRunning || !IS_EXTENSION_CONTEXT) return;
   if (!(await verifyDirectChannel())) {
     updateWeStatus();
-    if (!options.silent) notify(localFileHint());
     return;
   }
-  const targets = playlistEntries.filter((entry) => entry.kind !== 'scene' && (options.force || !entry.checkedAt));
-  if (!targets.length) {
-    if (!options.silent) notify('所有背景都已检查过；如需重新检查，请再点一次“检查缺失”。');
-    return;
-  }
+  const targets = playlistEntries.filter((entry) => entry.kind !== 'scene' && !entry.checkedAt);
+  if (!targets.length) return;
   weCheckRunning = true;
   const queue = targets.slice();
   const total = queue.length;
   let done = 0;
   let missingCount = 0;
-  let restoredCount = 0;
   const reportProgress = (): void => {
-    if (!options.silent) showImportStatus(`正在检查背景：${done}/${total}\n已发现缺失：${missingCount}`);
+    showImportStatus(`正在检查背景：${done}/${total}\n已跳过：${missingCount}`);
   };
   reportProgress();
   const worker = async (): Promise<void> => {
@@ -923,13 +913,10 @@ async function checkMissingWallpaperEngineEntries(options: { force?: boolean; si
       if (!entry) return;
       const exists = await probeWallpaperEngineEntry(entry);
       done += 1;
-      if (exists === false) {
-        if (!entry.missing) {
-          missingCount += 1;
-          await markWallpaperEngineMissing(entry.id, '检查时未找到文件', false);
-        }
+      if (exists === false && !entry.missing) {
+        missingCount += 1;
+        await markWallpaperEngineMissing(entry.id, '检查时未找到文件', false);
       } else if (exists === true && entry.missing) {
-        restoredCount += 1;
         await markWallpaperEnginePresent(entry.id);
       }
       if (done % 5 === 0 || done === total) reportProgress();
@@ -941,16 +928,10 @@ async function checkMissingWallpaperEngineEntries(options: { force?: boolean; si
     console.warn(`检查背景完整性失败：${errorMessage(error)}`);
   } finally {
     weCheckRunning = false;
+    hideImportStatus();
     renderMediaList();
     updateWeStatus();
   }
-  if (options.silent) return;
-  hideImportStatus();
-  const parts = [`已检查 ${total} 项`];
-  if (missingCount) parts.push(`新发现 ${missingCount} 项缺失（已从随机播放中排除）`);
-  if (restoredCount) parts.push(`${restoredCount} 项已恢复`);
-  if (!missingCount && !restoredCount) parts.push('全部存在');
-  notify(`${parts.join('，')}。场景包需整包解析，未参与本次检查。`);
 }
 
 /** 是否为已加载的扩展页面（chrome-extension:// 或具备 runtime.id）。 */
@@ -962,12 +943,12 @@ function localFileHint(): string {
     return '当前是开发预览页面：浏览器禁止普通网页读取本地文件（file://），请用已加载的扩展打开新标签页测试。';
   }
   if (fileSchemeAllowed === false) {
-    return 'Chrome 的“允许访问文件网址”当前是关闭的：请在 chrome://extensions 打开本扩展详情页勾选该项，再点击“检测文件直读”。';
+    return 'Chrome 的“允许访问文件网址”当前是关闭的：请在 chrome://extensions 打开本扩展详情页勾选该项，再点击“获取权限”。';
   }
   if (directReadState === 'ok') {
     return '这张背景读取失败（文件可能已被移动或删除），已尝试切换到其他背景。';
   }
-  return '读不到本地背景文件。请点击“检测文件直读”重新确认一次。';
+  return '读不到本地背景文件。请点击“获取权限”重新确认一次。';
 }
 
 async function playWallpaperEngineEntry(entryId: string, options: { silent?: boolean }): Promise<boolean> {
