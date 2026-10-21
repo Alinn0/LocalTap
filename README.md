@@ -2,7 +2,7 @@
 
 LocalTab 是一个以 Chrome Manifest V3 扩展形式交付的新标签页。它用你自己的本地图片、视频和 Wallpaper Engine 场景包作为背景，提供可自定义的快捷方式、可切换来源的图标缓存和一个轻量搜索框。所有数据保存在本机，核心体验在断网时依然完整可用。
 
-当前版本 `0.1.0`，处于 MVP 开发阶段。项目基于 AI 辅助开发，详见[关于 AI 辅助开发](#关于-ai-辅助开发)。
+当前版本 `0.1.0`，处于 MVP 开发阶段。项目基于 AI 辅助开发，详见[关于 AI 辅助开发](#关于-ai-辅助开发)；以 MIT 许可证开源。
 
 ## 功能特性
 
@@ -164,6 +164,7 @@ npm run preview  # 预览构建产物
 - [软件需求与任务规格说明](./LocalTab_软件需求与任务规格说明.md)
 - [开发进度](./LocalTab_开发进度.md)
 - [第三方声明](./THIRD_PARTY_NOTICES.md)（WebWallGL，MIT License）
+- [MIT 许可证](./LICENSE)
 
 ## 致谢
 
@@ -171,4 +172,4 @@ npm run preview  # 预览构建产物
 
 ## 许可
 
-项目自身尚未指定开源许可证；所依赖的第三方组件许可信息见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+本项目采用 [MIT License](./LICENSE)。所依赖的第三方组件许可信息见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
