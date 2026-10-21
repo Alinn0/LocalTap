@@ -1182,8 +1182,12 @@ async function probeDirectFileAccess(): Promise<void> {
   renderMediaList();
   if (result === 'ok') {
     notify('本地文件读取正常，无需在 chrome://extensions 重新授权。');
-    if (settings.backgroundSource === 'wallpaper-engine') {
-      await playRandomWallpaperEngineEntry({ reason: 'manual' });
+    // 只补上“还没有背景”的情况；已有背景时保持不动，避免点按钮就换壁纸。
+    if (!currentWeAsset && settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length) {
+      const current = playlistEntries.find((entry) => entry.id === settings.currentWallpaperEngineId);
+      if (!current || !(await playWallpaperEngineEntry(current.id, { silent: true }))) {
+        await playRandomWallpaperEngineEntry({ reason: 'manual' });
+      }
     }
     return;
   }
