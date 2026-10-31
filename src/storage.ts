@@ -38,9 +38,7 @@ function normalizeSettings(value: unknown): AppSettings {
     currentWallpaperEngineId: typeof candidate.currentWallpaperEngineId === 'string' ? candidate.currentWallpaperEngineId : null,
     previousWallpaperEngineId: typeof candidate.previousWallpaperEngineId === 'string' ? candidate.previousWallpaperEngineId : null,
     wallpaperConfigName: typeof candidate.wallpaperConfigName === 'string' ? candidate.wallpaperConfigName.slice(0, 200) : '',
-    iconSource: candidate.iconSource === 'browser' || candidate.iconSource === 'international' || candidate.iconSource === 'domestic'
-      ? candidate.iconSource
-      : DEFAULT_SETTINGS.iconSource,
+    iconSource: candidate.iconSource === 'international' ? 'international' : 'domestic',
     searchEngine: SEARCH_ENGINES.some((engine) => engine.id === candidate.searchEngine)
       ? candidate.searchEngine!
       : DEFAULT_SETTINGS.searchEngine,

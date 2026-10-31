@@ -95,6 +95,11 @@ export async function savePlaylistEntry(entry: WallpaperEngineEntry): Promise<vo
   await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.put(entry));
 }
 
+/** 标记为背景列表移除（软删除）：随机池与列表都跳过，重新导入配置后仍保持移除。 */
+export async function removePlaylistEntry(entry: WallpaperEngineEntry): Promise<void> {
+  await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.put({ ...entry, removed: true }));
+}
+
 /** 从播放列表彻底删除一条背景记录。 */
 export async function deletePlaylistEntry(id: string): Promise<void> {
   await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.delete(id));
@@ -110,7 +115,24 @@ export async function replacePlaylistEntries(entries: WallpaperEngineEntry[]): P
   const merged = entries.map((entry) => {
     const old = previousById.get(entry.id);
     return old
-      ? { ...entry, playedAt: old.playedAt, preview: old.preview, previewFromProject: old.previewFromProject }
+      ? {
+        ...entry,
+        playedAt: old.playedAt,
+        title: old.title,
+        preview: old.preview,
+        previewFromProject: old.previewFromProject,
+        previewFile: old.previewFile,
+        metadataCheckedAt: old.metadataCheckedAt,
+        previewCheckedAt: old.previewCheckedAt,
+        userProperties: old.userProperties,
+        projectInfo: old.projectInfo,
+        propertiesCheckedAt: old.propertiesCheckedAt,
+        projectInfoVersion: old.projectInfoVersion,
+        // 配置里的当前值每次导入刷新；用户在本扩展里的调整始终保留。
+        configPropertyValues: entry.configPropertyValues ?? old.configPropertyValues,
+        propertyOverrides: old.propertyOverrides,
+        removed: old.removed,
+      }
       : entry;
   });
   const db = await openDatabase();
@@ -133,12 +155,28 @@ export async function clearPlaylistPlayed(): Promise<void> {
     const tx = db.transaction(PLAYLIST_STORE_NAME, 'readwrite');
     const store = tx.objectStore(PLAYLIST_STORE_NAME);
     for (const entry of entries) {
-      store.put({ ...entry, playedAt: undefined, preview: undefined });
+      store.put({ ...entry, playedAt: undefined, preview: undefined, previewCheckedAt: undefined });
     }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('清除已播记录失败'));
     tx.onabort = () => reject(tx.error ?? new Error('清除已播记录事务中断'));
   });
+}
+
+/** 恢复所有被用户移除的背景条目（清除 removed 标记）。 */
+export async function restoreRemovedPlaylistEntries(): Promise<WallpaperEngineEntry[]> {
+  const entries = await listPlaylistEntries();
+  const restored = entries.map((entry) => ({ ...entry, removed: undefined }));
+  const db = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PLAYLIST_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(PLAYLIST_STORE_NAME);
+    for (const entry of restored) store.put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('恢复已移除背景失败'));
+    tx.onabort = () => reject(tx.error ?? new Error('恢复已移除背景事务中断'));
+  });
+  return restored;
 }
 
 export async function hashFile(file: Blob): Promise<string> {

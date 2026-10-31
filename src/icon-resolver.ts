@@ -3,19 +3,11 @@ import { deleteAsset, getAsset, listAssets, saveAsset } from './media-db';
 
 export interface IconSourceDefinition {
   label: string;
-  origins?: string[];
-  buildUrl?: (domain: string) => string;
-}
-
-export interface IconFetchResult {
-  asset: MediaAsset;
-  fallbackUsed: boolean;
+  origins: string[];
+  buildUrl: (domain: string) => string;
 }
 
 export const ICON_SOURCES: Record<IconSource, IconSourceDefinition> = {
-  browser: {
-    label: 'Chrome 内置',
-  },
   domestic: {
     label: '国内源 · 百度',
     origins: ['https://favicon.baidubce.com/*'],
@@ -53,19 +45,13 @@ export function iconCacheId(source: IconSource, domain: string): string {
 export async function hasIconPermission(source: IconSource): Promise<boolean> {
   const permissions = globalThis.chrome?.permissions;
   if (!permissions?.contains) return true;
-  if (source === 'browser') return permissions.contains({ permissions: ['favicon'] });
-  const origins = ICON_SOURCES[source].origins;
-  if (!origins) throw new Error(`${ICON_SOURCES[source].label} 未配置主机权限`);
-  return permissions.contains({ permissions: ['favicon'], origins });
+  return permissions.contains({ origins: ICON_SOURCES[source].origins });
 }
 
 export async function requestIconPermission(source: IconSource): Promise<boolean> {
   const permissions = globalThis.chrome?.permissions;
   if (!permissions?.request) return true;
-  if (source === 'browser') return permissions.request({ permissions: ['favicon'] });
-  const origins = ICON_SOURCES[source].origins;
-  if (!origins) throw new Error(`${ICON_SOURCES[source].label} 未配置主机权限`);
-  return permissions.request({ permissions: ['favicon'], origins });
+  return permissions.request({ origins: ICON_SOURCES[source].origins });
 }
 
 export async function getCachedIcon(source: IconSource, domain: string): Promise<MediaAsset | undefined> {
@@ -73,37 +59,15 @@ export async function getCachedIcon(source: IconSource, domain: string): Promise
   return asset?.kind === 'icon' ? asset : undefined;
 }
 
-export async function fetchAndCacheIcon(source: IconSource, domain: string, pageUrl = `https://${domain}`): Promise<IconFetchResult> {
+export async function fetchAndCacheIcon(source: IconSource, domain: string): Promise<MediaAsset> {
   if (!(await hasIconPermission(source))) {
     throw new Error(`未授予 ${ICON_SOURCES[source].label} 的图标读取权限`);
   }
-
-  if (source === 'browser') {
-    try {
-      return { asset: await cacheIcon(source, domain, await fetchBrowserIcon(pageUrl)), fallbackUsed: false };
-    } catch (error) {
-      throw new Error(`Chrome 内置图标获取失败：${errorMessage(error)}`);
-    }
-  }
-
-  let sourceError: string;
-  try {
-    const blob = await fetchRemoteIcon(source, domain);
-    return { asset: await cacheIcon(source, domain, blob), fallbackUsed: false };
-  } catch (error) {
-    sourceError = errorMessage(error);
-  }
-
-  try {
-    return { asset: await cacheIcon(source, domain, await fetchBrowserIcon(pageUrl)), fallbackUsed: true };
-  } catch (error) {
-    throw new Error(`${ICON_SOURCES[source].label} 获取失败：${sourceError}；Chrome 内置回退也失败：${errorMessage(error)}`);
-  }
+  return cacheIcon(source, domain, await fetchRemoteIcon(source, domain));
 }
 
 async function fetchRemoteIcon(source: IconSource, domain: string): Promise<Blob> {
   const buildUrl = ICON_SOURCES[source].buildUrl;
-  if (!buildUrl) throw new Error(`${ICON_SOURCES[source].label} 未配置图标地址`);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12_000);
   let response: Response;
@@ -150,16 +114,6 @@ async function cacheIcon(source: IconSource, domain: string, blob: Blob): Promis
     throw new Error(`图标已获取，但写入本地 IndexedDB 缓存失败：${errorMessage(error)}`);
   }
   return asset;
-}
-
-async function fetchBrowserIcon(pageUrl: string): Promise<Blob> {
-  const runtime = globalThis.chrome?.runtime;
-  if (!runtime?.getURL) throw new Error('Chrome 内置图标接口仅在已加载的扩展页面中可用');
-  const url = new URL(runtime.getURL('_favicon/'));
-  url.searchParams.set('pageUrl', new URL(pageUrl).origin);
-  url.searchParams.set('size', '64');
-  const image = await loadImage(url.href);
-  return rasterizeImage(image);
 }
 
 async function normalizeIcon(blob: Blob): Promise<Blob> {

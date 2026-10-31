@@ -30,6 +30,7 @@
       <p id="import-status" class="import-status" role="status" aria-live="polite" hidden></p>
 
       <footer id="wallpaper-bar" class="footer">
+        <p id="wallpaper-name" class="wallpaper-name" hidden></p>
         <div id="playback-controls" class="playback-controls">
           <button id="previous-media" class="text-button" type="button" aria-label="上一张壁纸">‹</button>
           <button id="toggle-playback" class="text-button" type="button" aria-label="暂停壁纸">Ⅱ</button>
@@ -44,7 +45,12 @@
     <aside id="settings-panel" class="settings-panel" aria-label="LocalTab 设置" hidden>
       <div class="panel-heading">
         <div><p class="eyebrow">PERSONALIZE</p><h1>设置</h1></div>
-        <button id="settings-close" class="icon-button" type="button" aria-label="关闭设置">×</button>
+        <div class="panel-heading-actions">
+          <button id="scroll-top" class="icon-button" type="button" aria-label="回到设置顶部">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19.5V5"/><path d="m5.5 11.5 6.5-6.5 6.5 6.5"/></svg>
+          </button>
+          <button id="settings-close" class="icon-button" type="button" aria-label="关闭设置"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button>
+        </div>
       </div>
 
       <section class="panel-section">
@@ -78,6 +84,9 @@
             <button id="we-random" class="small-button" type="button">随机换一张</button>
             <button id="clear-we-played" class="small-button danger-button" type="button" disabled>清除已播记录</button>
           </div>
+          <div class="media-actions">
+            <button id="we-restore-removed" class="small-button" type="button" hidden disabled>恢复已移除（0）</button>
+          </div>
           <input id="we-config-input" type="file" accept="application/json,.json" hidden />
         </div>
         <div id="media-list-heading" class="section-heading media-list-heading">
@@ -108,12 +117,11 @@
         <label class="field-row icon-source-row" for="icon-source">
           <span>图标来源</span>
           <select id="icon-source">
-            <option value="browser">Chrome 内置</option>
             <option value="domestic">国内源 · 百度</option>
             <option value="international">国际源 · Google</option>
           </select>
         </label>
-        <p class="source-note">Chrome 内置来源从浏览器图标库解析；百度/Google 来源会向所选服务发送快捷方式域名。结果缓存于本机，失败时显示首字母。首次使用需授权。</p>
+        <p class="source-note">图标按所选来源联网获取：百度/Google 会收到快捷方式的域名。结果缓存于本机，失败时显示首字母。首次使用需授权。</p>
         <button id="refresh-icons" class="small-button" type="button">按当前来源重新获取图标</button>
       </section>
 
@@ -137,7 +145,7 @@
 
     <dialog id="shortcut-dialog" class="editor-dialog">
       <form id="shortcut-form" method="dialog">
-        <div class="dialog-heading"><div><p class="eyebrow">SHORTCUT</p><h2 id="dialog-title">添加快捷方式</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="关闭">×</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">SHORTCUT</p><h2 id="dialog-title">添加快捷方式</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div>
         <input id="shortcut-id" type="hidden" />
         <label class="input-field">名称<input id="shortcut-name" maxlength="40" required placeholder="例如：GitHub" /></label>
         <label class="input-field">网址<input id="shortcut-url" type="url" required placeholder="https://example.com" /></label>
@@ -153,6 +161,15 @@
         <button class="secondary-button" type="button" value="skip">跳过</button>
         <button class="secondary-button" type="button" value="rename">重命名导入</button>
         <button class="primary-button" type="button" value="overwrite">覆盖已有</button>
+      </div>
+    </dialog>
+    <dialog id="we-properties-dialog" class="editor-dialog we-properties-dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">WALLPAPER OPTIONS</p><h2 id="we-properties-title">用户选项</h2></div><button id="we-properties-close" class="icon-button" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div>
+      <p id="we-properties-note" class="source-note"></p>
+      <div id="we-properties-list" class="property-list"></div>
+      <div class="dialog-actions">
+        <button id="we-properties-reset" class="secondary-button" type="button" hidden>恢复默认</button>
+        <button id="we-properties-done" class="primary-button" type="button">关闭</button>
       </div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

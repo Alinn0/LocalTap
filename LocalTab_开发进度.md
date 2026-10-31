@@ -1,8 +1,8 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 4.4）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 4.10）
 
-**记录日期：** 2026-10-21
+**记录日期：** 2026-10-31
 
 **当前版本：** 0.1.0（MVP 开发中）
 
@@ -14,24 +14,26 @@
 
 ## 已实现
 
-- [x] MV3 新标签页接管入口和最小 `storage` 权限；Chrome 内置 favicon 使用可选 `favicon` 权限，百度/Google 域名使用 `optional_host_permissions`。
+- [x] MV3 新标签页接管入口和最小 `storage` 权限；百度/Google 图标域名使用 `optional_host_permissions`，不再申请 `favicon` 权限，也不使用浏览器内置 favicon 接口，保证 Chrome 与 Edge 同一份构建可用。
 - [x] 新标签页基础布局（内容靠上排布、无时钟与日期）、搜索输入和设置侧栏。
 - [x] 搜索框与快捷方式常态近乎透明；悬停时背景变暗、模糊且两类控件同步加深；点击搜索框后保持突出、点击页面背景恢复；点击快捷方式立即恢复常态；键盘聚焦提供相同提示。
 - [x] 已获取的网站图标在快捷方式底板内缩小并居中显示，保留留白；底板尺寸和突出效果不变。
 - [x] 网站图标图片有独立浅色衬底，透明像素在背景暗化/快捷方式高亮时仍保持清晰。
-- [x] 左下角壁纸控制栏可折叠为单个展开按钮，折叠状态写入设置并跨标签页保持；不再显示壁纸名称小字。
+- [x] 左下角壁纸控制栏可折叠为单个展开按钮，折叠状态写入设置并跨标签页保持；展开时在按钮左侧显示当前壁纸名称（本地媒体库取文件名，Wallpaper Engine 优先 `project.json` 的 `title`、否则取作品目录名），无背景或折叠时隐藏。
 - [x] 设置中的壁纸列表单独支持折叠/展开；折叠状态持久化，导入入口与播放模式仍可用。
 - [x] 壁纸列表标题行显示数量（无搜索时“壁纸列表（共 N 项）”，搜索中“壁纸列表（M / N 项）”），并提供按名称实时过滤的搜索框；无命中显示“没有匹配的壁纸。”空态，折叠列表时搜索框一并隐藏。
 - [x] 导入期间在左下角（壁纸控制栏上方）显示两行进度小字“正在导入：{名字}”/“已导入：{已导入数}/{本批总数}”，本批完成后自动隐藏。
 - [x] 可清除全部壁纸、按首次冲突选择批量覆盖/跳过/自动重命名，并可选择文件夹批量导入支持格式。
 - [x] 新增背景来源选择：本地媒体库（上传 / 选择文件夹）与 Wallpaper Engine 播放列表；可直接选择 Wallpaper Engine `config.json`。
-- [x] 读取 `config.json` 中所有 profile/显示器的 `playlist.items` 与 `playlists` 路径并去重；支持 MP4、WebM、JPEG、PNG、WebP、PKGV `.pkg`，并把声明 `file: "scene.json"` 的松散工程按场景收录（播放同目录 `scene.pkg`）；网页壁纸 `index.html`、`project.json`、`.mpkg` 等条目跳过并按类型汇总数量。
+- [x] 读取 `config.json` 时只解析当前用户节点：跳过 `?installdirectory` 等元数据键与 `defaultuser100000` 默认模板；多个用户节点时优先选择含 `general.wallpaperconfig`、数据最完整的节点。在该节点内收集各显示器的 `playlist.items` 与 `playlists` 路径，按规范化路径去重并保留配置顺序；支持 MP4、WebM、JPEG、PNG、WebP、PKGV `.pkg`，并把声明 `file: "scene.json"` 的松散工程按场景收录（播放同目录 `scene.pkg`）；网页壁纸 `index.html`、`project.json`、`.mpkg` 等条目跳过并按类型汇总数量；提示中给出实际读取的用户名。
 - [x] Wallpaper Engine 模式只用 `file://` 直读一条通道：manifest 声明 `file:///*`，用户在 `chrome://extensions` 勾选“允许访问文件网址”后，按 `config.json` 的绝对路径用 XHR 读取媒体、`project.json` 与预览图；目录句柄/`webkitdirectory` 与按会话授权流程已全部移除，读取失败不会回退到任何权限请求。
 - [x] 设置面板提供“获取权限”按钮：先查询 `chrome.extension.isAllowedFileSchemeAccess()`，再用多个小文件（`project.json`、预览图、非场景媒体）探测；该按钮只做校验，不会更换正在播放的背景，仅在没有任何背景时才加载一次。
 - [x] 直读生效后状态提示整行隐藏；未生效时只显示不含本机绝对路径的相对目录（如 `steamapps/workshop/content/431960`），并区分“开关被关闭”与“读不到文件”两种原因。
-- [x] Wallpaper Engine 模式的列表显示为“已播背景列表”，只展示已成功播放且可用的背景；名称优先取同目录 `project.json` 的 `title`，缩略图优先用项目 `preview.*`，缺失时才用首帧生成，并提供“清除已播记录”（仅清除记录与预览）。
-- [x] 缺失与不受支持的条目自动跳过：导入配置后后台检查一次（视频只读元数据、图片只解码一次、并发 4、8 秒超时视为未知），播放失败且通道正常时补充标记；被标记条目不进入随机池、不出现在已播背景列表，只在统计行显示“已跳过 N 项”，无手动重查按钮。
-- [x] 已播背景列表的 × 会从 IndexedDB 播放列表中彻底删除该条目；删除当前正在播放的背景时回退默认渐变。
+- [x] Wallpaper Engine 模式的列表显示配置中的全部播放列表条目，**当前播放的条目固定排在最前**，其余按配置顺序；统计行显示“播放列表 N 项 · 可用 M 项 · 已播 K 项”；名称优先取同目录 `project.json` 的 `title`，缩略图优先用项目 `preview.*`；缩略图与项目信息只为滚动进入可视区的行懒加载（并发 3，预览缩放到 ≤320 px），未滚到的行只显示类型图标；提供“清除已播记录”（仅清除已播时间与预览，保留条目）。
+- [x] 缺失与不受支持的条目自动跳过：导入配置后后台检查一次（视频只读元数据、图片只解码一次、并发 4、8 秒超时视为未知），播放失败且通道正常时补充标记；被标记条目不进入随机池，在背景列表中置灰并标注“文件缺失”，统计行显示“已跳过 N 项”，无手动重查按钮。
+- [x] 背景列表的 × 改为**软删除**：条目写入 `removed` 标记后从列表与随机池移除，重开页面、重新导入 `config.json` 都不会再随机到；统计行显示“已移除 N 项”，设置面板出现“恢复已移除（N）”按钮可一键找回；移除当前正在播放的背景时回退默认渐变。
+- [x] 场景包可调整**用户选项**（类同 WE 客户端的配置面板）：**声明了可编辑选项的行在操作区显示“⚙ 配置”按钮**（无选项时无按钮，不使用右键菜单）——读取 `project.json` 的 `general.properties`，复选框/滑块/下拉/取色器/文本框直接编辑，改动即时通过 `setProperties` 推给渲染页并持久化到条目；`config.json` 的 `wproperties` 作为初始值，支持“恢复默认”；`schemecolor`、`volume` 等 WE 保留项与不可编辑类型不展示，`condition` 实时求值控制显隐。
+- [x] 场景包渲染帧率上限跟随显示器刷新率：加载前用 rAF 采样估算（24–240），采样不足时用 240，不再固定 30 fps。
 - [x] 视频与图片使用 `file://` 地址流式播放（不整文件读入内存），可播放 GB 级文件；切换后只回收自己创建的 Blob URL。
 - [x] 页面引导文案“导入一张壁纸或添加快捷方式，开始打造你的新标签页。”只在完全空白状态（无壁纸、无快捷方式）显示。
 - [x] Wallpaper Engine 背景在启动、手动上一张/下一张和自动切换时从配置地址随机抽取候选并逐个尝试；成功加载后重新计时。
@@ -42,7 +44,7 @@
 - [x] 使用 WebWallGL 在浏览器中渲染场景层、脚本及效果；可暂停/恢复，并从 WebGL 渲染画面生成媒体列表缩略图。
 - [x] `.pkg` 场景壁纸支持鼠标交互：主页面把指针位置换算为画布归一化坐标并注入场景引擎（供视差/光标跟随/拖拽类场景使用），背景按住左键进入拖拽状态并显示抓取光标；点击搜索框、快捷方式、控制栏、设置面板和对话框时不把按键传给壁纸；指针离开窗口只释放按键、保留最后位置。
 - [x] 设置内壁纸列表统一显示缩略预览：图片用自身画面、场景包用渲染首帧、视频用视频第一帧；视频预览在导入时解码第一帧并等比缩放为宽度 ≤320 px 的 JPEG 存入本地库，历史导入且缺预览的视频在启动后串行补齐，失败不阻断导入并回退类型图标。
-- [x] 设置面板标题栏（设置标题与关闭按钮）在面板滚动时固定在顶部，便于随时关闭；点击设置面板外的壁纸区域可关闭设置面板。
+- [x] 设置面板标题栏（设置标题、回到顶部按钮与关闭按钮）在面板滚动时固定在顶部，便于随时回到顶部或关闭；点击设置面板外的壁纸区域可关闭设置面板。
 - [x] 右上角设置按钮采用黑色半透明衬底与轻微模糊，悬停时衬底进一步加深，提升其在浅色壁纸上的可辨识度。
 - [x] 导入时 MIME、空文件、浏览器解码检查及分块 SHA-256 指纹；**已移除 100 MB 文件大小上限，改用配额提示**。
 - [x] 重复媒体可选择跳过、保留副本或替换；删除只作用于扩展副本。
@@ -50,14 +52,14 @@
 - [x] 固定、顺序、随机模式；随机模式尽量避免连续重复。
 - [x] 最多 18 个快捷方式，支持新增、编辑、删除、拖拽排序及上下移替代操作。
 - [x] 限制快捷方式网址为 HTTP/HTTPS。
-- [x] 图标来源可切换：Chrome 官方 `/_favicon/` 接口、国内源（百度）/ 国际源（Google）；按用户手势申请相应可选权限。远程源失败会回退至 Chrome 内置接口。
+- [x] 图标来源可切换：国内源（百度）/ 国际源（Google）两种远程来源，默认百度；按用户手势申请对应可选主机权限。请求或解码失败时回退首字母，不使用任何浏览器内置接口。
 - [x] 图标缓存以 `icon:<来源>:<域名>` 为键写入 IndexedDB，命中缓存或离线时直接使用本地缓存，缓存缺失回退首字母，不出现破图。
 - [x] 已删除用户上传图标入口，并在启动时清理历史遗留的上传图标资源。
 - [x] 提供“按当前来源重新获取图标”按钮，可清除当前来源缓存并重新解析。
-- [x] 图标刷新按钮未授权时直接请求当前来源与 Chrome 内置回退所需权限；网络、HTTP、MIME、图片解码和 IndexedDB 写入错误会反馈，不再静默当作获取成功。
+- [x] 图标刷新按钮未授权时直接请求当前来源所需的主机权限；网络、HTTP、MIME、图片解码和 IndexedDB 写入错误会反馈，不再静默当作获取成功。
 - [x] 缓存图标先成功解码再替换首字母，缓存图像损坏时恢复首字母；缓存 Blob 的 MIME 与转换后的 PNG 一致。
 - [x] 搜索引擎可在设置中选择（百度、Google、必应、搜狗、360 搜索、DuckDuckGo、Yandex），提交后按模板跳转，搜索词经 URL 编码。
-- [x] 配置 JSON 导入/导出（含当前来源的图标缓存），导入校验网址、图标与设置字段并支持合并/替换。
+- [x] 配置 JSON 导入/导出（含当前来源的图标缓存），导入校验网址、图标与设置字段并支持合并/替换；导入时不再自动下载当前配置的恢复点，只在确认框提示用户先手动导出。
 - [x] 添加开发进度记录。
 - [x] `npm run build` TypeScript 检查与生产构建通过（WebWallGL 产物约 1.09 MB，Vite 给出大 chunk 提示；gzip 约 329 KB）。
 - [x] 本地预览以 `魅影.pkg` 实测完整场景及缩略图；缩略图像素检查确认是非均匀场景画面，而非灰色占位图。
@@ -76,7 +78,7 @@
 - [ ] 媒体导入不设文件大小上限，尚无可视化存储配额统计与预估占用提示。
 - [ ] 暂无自动化测试与导入导出迁移测试。
 - [ ] 图标解析仅在已授权且缓存未命中时发起一次请求；未在真实扩展环境验证 `chrome.permissions` 授权流程。
-- [ ] 远程图标服务可访问性仍受当前网络影响；需在实际 Chrome 扩展中检查 Google 重定向权限、Chrome 内置接口授权与回退。IndexedDB 是扩展本地数据库，不需要文件系统权限；其写入错误会提示。
+- [ ] 远程图标服务可访问性仍受当前网络影响；需在实际 Chrome/Edge 扩展中检查 Google 重定向权限与百度来源授权。IndexedDB 是扩展本地数据库，不需要文件系统权限；其写入错误会提示。
 - [ ] 自动播放受浏览器策略影响；视频始终静音，播放失败时页面仍可操作。
 - [ ] 场景鼠标交互目前只在引擎状态层验证（坐标、按键、离开语义与父页面一致）；项目样本 `魅影.pkg` 不含视差层或指针脚本，未取得画面级可见反馈，需另找消费指针的场景包复验。
 - [ ] 视频首帧预览只在本地预览环境用 MP4（1920×1080）实测；未在真实扩展环境复验，WebM 与「超时/解码失败」分支也未取得样本走通，这两个分支目前只有代码级保障。
@@ -398,6 +400,76 @@
 3. 原第 2 章改写为“设计背景与假设”：2.1 列出待解决的问题（图标依赖外网、壁纸依赖外部来源、大文件与配额冲突、配置难以迁移），2.2 保留原有的三条主动设计假设。章节编号不变，后续章节与验收编号不受影响。
 4. 1.3 非目标中的商标条款改为通用表述“不复制任何第三方产品的商标、素材、界面资产或私有实现”；第 1 章首段去掉隐含的对标叙述，只保留问题定义。
 5. 新增仓库根目录 `README.md`，介绍功能、技术栈、目录结构、构建与加载步骤、使用要点、隐私与已知限制；两份文档与 README 均不再出现第三方产品名称。
+
+## 本次修改记录（任务书 4.5）
+
+1. 图标来源去掉浏览器内置接口：`IconSource` 收敛为 `domestic | international`，`ICON_SOURCES` 删除 `browser` 条目，`fetchAndCacheIcon()` 不再回退 `chrome-extension://<ID>/_favicon/`，`hasIconPermission()` / `requestIconPermission()` 只申请所选远程来源的主机权限；`public/manifest.json` 删除可选 `favicon` 权限。旧设置与旧备份中的 `browser` 统一迁移为默认的国内源（百度），旧缓存按来源键自然失效并回退首字母。
+2. 设置面板图标来源只剩“国内源 · 百度”“国际源 · Google”，说明文案同步改为“百度/Google 会收到快捷方式域名”；提示与 `reportIconSync()` 删除“Chrome 内置回退”相关文字。该实现不依赖浏览器内置 favicon 能力，Chrome 与 Edge 共用同一份构建。
+3. 导入配置不再触发下载：`importBackup()` 删除替换前的 `await exportBackup()`，确认框改为“替换前不会自动下载恢复点，如需保留当前配置请先导出 JSON”；合并/替换逻辑不变。
+4. `config.json` 只读取当前用户：`src/wallpaper-engine.ts` 新增 `selectCurrentUserNode()`，跳过 `?` 开头的元数据键与 `defaultuser100000` 默认模板；若存在多个用户节点，按“含 `general.wallpaperconfig`、有 `selectedwallpapers`、`wproperties` 数量”打分选出当前用户，其余节点记入 `ignoredUsers`。`ParsedWallpaperConfig` 用 `user`/`ignoredUsers` 替代原 `profiles`，条目新增 `order` 保留配置顺序；导入提示显示实际读取的用户名与被忽略的节点数。
+5. Wallpaper Engine 列表由“已播历史”改为“全部播放列表”：`renderWallpaperEngineList()` 按 `order` 渲染全部条目，统计行显示“播放列表 N 项 · 可用 M 项 · 已播 K 项”，缺失条目置灰并标注“文件缺失”，不再隐藏；搜索仍只按名称过滤。
+6. 缩略图改为懒加载：新增 `IntersectionObserver`（预加载边距 160 px）+ 并发 3 的队列，只对进入可视区的行读取同目录 `project.json` 与项目预览图；预览图经 `captureImagePreview()` 缩放到宽度 ≤320 px 后再写入 IndexedDB。条目新增 `metadataCheckedAt` / `previewCheckedAt`，同一行不会重复读盘；播放时的预览缓存也改为先缩放项目预览图，避免把原图存进列表。移除启动时全量补齐已播元数据的 `backfillWallpaperEngineMetadata()`。
+7. 性能结论（任务书第 4 项）：仅增加列表行本身的开销可忽略（约 900 行约十几到几十毫秒）；直接全量读取缩略图则会产生数十秒 file:// I/O、数百 MB 存储与解码内存。因此采用懒加载方案，首屏不读媒体，滚动到哪加载到哪，内存与可视区相关。
+8. 验证：`tsc -b` 与 `vite build` 通过（产物 `main-*.js` 约 60 KB，WebWallGL chunk 仍约 1.09 MB）；用本机 `E:/Games/Steam/steamapps/common/wallpaper_engine/config.json` 实测解析结果为 `user = Alinn`、忽略 `defaultuser100000`、893 个条目（场景 706、视频 187）、跳过 5 项（网页壁纸 4、其它 1），首条顺序与配置中 `Monitor0.playlist.items` 一致。
+9. 文档：需求书 `4.4 → 4.5`，重写 FR-02-10/12/16/17、FR-06、FR-07，更新 AT-17/21/39/41/42/43/44/50/52，新增 AT-53（懒加载性能）与 AT-54（只读当前用户）；进度书同步版本与日期（2026-10-31），并更新“已实现/尚未完成”。
+10. 恢复左下角壁纸名称显示（此前版本移除了该小字）：`index.html` 在控制栏内新增 `#wallpaper-name`，`renderWallpaperName()` 显示当前背景名称并在无背景（含 Wallpaper Engine 尚未加载成功）时隐藏，折叠控制栏时一并隐藏；`currentBackgroundName()` 在本地库取文件名、在 Wallpaper Engine 模式取 `project.json` 标题或作品目录名。
+11. Wallpaper Engine 列表名称与副标题调整：`scene.pkg` 无标题时改为只显示作品目录名（如 `2861452579`），不再拼成 `2861452579/scene.pkg`；副标题为“类型 · 播放状态 · 文件名”，文件名与名称相同时不重复显示。
+
+## 本次修改记录（任务书 4.6）
+
+1. 切换后置顶：`renderWallpaperEngineList()` 排序改为“当前播放的条目在前，其余按 `order`”，每次成功加载（手动/自动/随机）后列表第一行即当前壁纸；统计行与搜索计数不受影响。
+2. × 改为软删除并持久：条目新增 `removed` 标记，`media-db.ts` 新增 `removePlaylistEntry()` / `restoreRemovedPlaylistEntries()`；`replacePlaylistEntries()` 合并时保留 `removed`，所以重新导入同一份 `config.json` 也不会把条目放回随机池。随机池（`availableWallpaperEngineEntries`）、缺失检查、已播统计、`activePoolSize()`、引导文案判定都排除 `removed`；统计行追加“已移除 N 项”，设置面板新增“恢复已移除（N）”按钮，全部被移除时状态行提示可恢复。
+3. 场景包用户选项：`wallpaper-engine.ts` 新增 `parseProjectProperties()` 并把结果放进 `ProjectMetadata.properties`；同文件新增 `readPropertyValues()`（解析当前用户节点的 `wproperties`）与 `propertyOverridesFor()`，导入时把当前值写入条目 `propertyOverrides`。`main.ts` 新增右键（`contextmenu`）处理与只读对话框 `#we-properties-dialog`：按 bool/color/slider/combo/textinput/scenetexture 展示，颜色显示色块与 RGB，滑块显示区间，下拉显示选项文案，被 `wproperties` 改过的项蓝色标注并提示默认值；属性文本去除 HTML 后以 `textContent` 渲染。条目新增 `propertiesCheckedAt`，旧数据首次读取后补齐。
+4. 渲染帧率跟随刷新率：`scene-renderer.ts` 新增 `detectRefreshRate()`，用 rAF 采样中位帧间隔估算刷新率（24–240）作为 `mount({ fps })`，采样不足时用 240（逐帧跟随 rAF），并在控制台输出“场景渲染帧率上限：N fps”；不再固定 30。
+5. 验证：`tsc -b` 与 `vite build` 通过（`main-*.js` 68 KB / gzip 22 KB）。用本机 `config.json` 与 Workshop `project.json` 实测：属性解析得到 78 条 `wproperties` 路径，`1883091303` 的当前值为 `{ censorship_kun_god_ray_: false }`，`project.json` 解析出“主题配色 / Censor / Volume”三项且 HTML、本地化键已清洗；浏览器预览实测 × 后条目写入 `removed`、刷新后仍隐藏、统计显示“已移除 1 项”，点“恢复已移除（1）”后回到列表；右键场景包弹出对话框，颜色显示 `rgb(187, 136, 122)`、被改过的开关显示“关”并标注默认值。
+6. 文档：需求书 `4.5 → 4.6`，更新 FR-02-12/16/17、新增 FR-02-18、FR-03 与 FR-04（帧率）说明，新增 AT-55/56/57 并改写 AT-52；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.7）
+
+1. 场景包用户选项由“只读展示”改为**可编辑并即时生效**，对齐 Wallpaper Engine 客户端的配置面板（用户提供的 Sonic 截图即此形态）：
+   - `parseProjectProperties()` 增加 `condition`、`step`、`fraction` 解析；可编辑类型收敛为 `bool`/`color`/`slider`/`combo`/`textinput`，并过滤 WE 保留项 `schemecolor`、`volume`、`_imgDir`/`imgDir`、`reset` 与 `condition: "false"` 的隐藏项。本机 `3706286085` 实测解析出 63 项（Camera1–5、CameraDIY_On/Off、CamDIY_PosX…、FovDIY 等），无主题配色/音量。
+   - 值来源分层：`propertyOverrides`（用户在本扩展中的调整）> `configPropertyValues`（每次导入 `config.json` 刷新）> `project.json` 默认值；`replacePlaylistEntries()` 合并时保留 `propertyOverrides`，因此重新导入配置不会冲掉用户调整。
+   - 对话框改为 `<label>` + 原生控件：复选框、`input[type=range]`（带数值显示，使用 `min`/`max`/`step`）、`select`、`input[type=color]`（与 WE 的 `r g b` 0–1 三元组互转）、文本框；改动后按条件实时重算显隐，新增“恢复默认”按钮清除该壁纸全部调整。
+   - 生效链路：`main.ts` 的 `applySceneProperties()` 以 `postMessage({type:'properties'})` 推给 `scene-renderer.ts`，后者缓存并调用 `SceneInstance.setProperties()`；`sendScenePackage()` 在 `load` 消息里附带 `effectiveProperties(entry)`，渲染页把它作为 `mount({ properties })` 传入。改参数不会重新读取或重挂 `.pkg`（WebWallGL 内部对 combo/color 做值转换）。
+   - 条件求值 `evaluatePropertyCondition()`：支持 `name.value ==/!=/>/</>=/<=` 字面量、`&&`、`||` 与括号；无法解析时按可见处理，避免误藏选项。
+   - `project.json` 未声明选项时改为提示“没有可选配置”而不弹空对话框；读不到 `project.json`（未开启文件访问/预览环境）时弹说明。
+2. 验证：`tsc -b` 与 `vite build` 通过；浏览器预览中以真实 `3706286085/project.json` 的声明做界面实测——6 个控件渲染正确（开关 2 个、滑块 2 个、下拉 1 个、条件项 1 个），`config.json` 的 `wproperties` 值（`CamDIY_PosX = 1.5`）作为初始值显示；勾选两项后带 `condition` 的 `CamDIY_Mirror` 由隐藏变为可见；拖动滑块到 7.25、勾选开关后 IndexedDB 中 `propertyOverrides = {camera1:true, cameradiy:true, cameradiy_posx:7.25}`，刷新页面重新打开对话框仍保持；“恢复默认”后 `propertyOverrides` 清空、数值回到 1.5、条件项重新隐藏。真实场景的即时画面响应需在已加载扩展中按 AT-57 复核。
+3. 文档：需求书 `4.6 → 4.7`，重写 FR-02-18 与 AT-57，FR-04 补充“改参数走 `setProperties`，不得重挂 `.pkg`”；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.8）
+
+1. 用户选项入口从右键改为行内按钮：删除 `mediaList` 的 `contextmenu` 监听与 `handlePlaylistContextMenu()`，改为在 `renderWallpaperEngineList()` 里为**声明了可编辑选项的场景包**追加 `⚙` 按钮（`createPropertiesButton()`，`aria-label="配置 {名称}"`，样式 `.media-properties`）；`handleMediaAction()` 识别 `button.media-properties` 后调用 `showWallpaperEngineProperties()`。
+2. 按钮是否出现取决于懒加载读到的 `project.json`：`hasEditableProperties()` 在 `kind === 'scene'` 且有非保留项时返回 true；`updateWallpaperEngineRow()` 调用新增的 `syncWallpaperEngineRowActions()`，元数据读回后即时补上或去掉按钮，未滚到可视区的行不会读取。
+3. `enqueueWallpaperEngineThumbnail()` 的入队条件改为“缺项目信息 或 缺预览”，此前只要条目已有预览就不再读 `project.json`，导致老数据始终不会出现配置按钮。
+4. 视频/图片条目与没有声明选项的场景包都不显示该按钮；行内操作区保持“播放 → 配置 → 移除”的顺序。
+5. 验证：`tsc -b` 与 `vite build` 通过；浏览器预览按三种条目实测——有选项的场景包按钮为“播放 / ⚙ 配置 / 移除”，无选项的场景包与 MP4 只有“播放 / 移除”；点击 ⚙ 正常弹出对话框（Camera1、CamDIY_PosX 两行），关闭后右键行不再弹出自定义菜单。
+6. 文档：需求书保持 `4.7`（同日增量更新 FR-02-18 与 AT-57 的入口描述），进度书新增本节并同步“已实现”条目。
+
+## 本次修改记录（任务书 4.9）
+
+1. 修复“改了用户选项但画面不变”的根因：WebWallGL 的 `mergeUserPropertyValues()` 只有在该属性**已有声明**（`project.general.properties[k]`）时才把 `setProperties()` 的值写回 `scene.json` 的 `{"user": "..."}` 绑定；此前只把 `{ value }` 传给 `SceneInstance.setProperties()`，`declareFromWire()` 因缺少 `type` 返回 null，结果只更新了脚本环境（`liveUserProps`），绑定值与画面不变。场景包 `scene.pkg` 本身不含 `project.json`（Sonic 样本 186 个入口无 `project.json`，但 `scene.json` 里有 20+ 个 `user` 绑定）。
+2. `wallpaper-engine.ts` 新增 `buildProjectInfo()`：从 `project.json` 生成渲染引擎需要的项目声明（`type` / `file` / `title` / `general.properties`，保留 `type`、`value`、`min`、`max`、`step`、`precision`、`fraction`、`options`、`order`、`condition`，最多 400 项、文本截断），放进 `ProjectMetadata.projectInfo`；`parseProjectMetadata()` 一并返回。Sonic 样本得到 64 条声明（含 `camera1`、`cameradiy_fov` 等），`schemecolor` 等也保留给引擎。
+3. `models.ts` 新增 `WallpaperProjectInfo` 与此字段：条目的 `projectInfo`（声明）与 `projectInfoVersion`（解析版本，当前 2）；`media-db.replacePlaylistEntries()` 合并时保留两者。`main.ts` 的 `ensureWallpaperEngineMetadata()` 在缺少 `projectInfoVersion === 2` 时会重新读取一次 `project.json`，完成老数据迁移。
+4. `sendScenePackage()` 在 `load` 消息里带上 `project: entry.projectInfo`；`scene-renderer.ts` 把它作为 `bytesSource(bytes, project, key)` 的第二个参数。引擎据此在 `parseScene()` 中建立属性表，`setProperties()` 与 `mount({ properties })` 才能真正改到画面。
+5. 兜底提示：当前背景缺少 `projectInfo`（例如未开启“允许访问文件网址”）时调整参数会提示“画面可能不会立即变化”，避免静默失效；对话框打开时若发现声明版本过旧也会重试读取。
+6. 验证（真实 `scene.pkg` 实测，样本 `3366173072`，665 KB）：用 WebWallGL 直接挂载同一份 pkg，`newproperty2`（`scale` 绑定）从 1 改到 2 —— **带 project 声明时 145,846 个像素变化，不带声明时 0 个像素变化**，与用户反馈一致，确认修复有效；`noisePixels` 均为 0（`scripts: false` 下画面静止），排除了动画干扰。测试用的临时页面与 pkg 副本已删除。
+7. 文档：需求书 `4.7 → 4.9`（4.8 为按钮入口调整），FR-02-18 补充“渲染必须携带项目声明”的强制要求与静默失效禁止项，AT-57 增加“切换机位后画面立即变化”的判定；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.10）
+
+1. 主页面右上角恢复为只有设置按钮（`index.html` 的 `.topbar` 删除此前临时加入的“回到顶部”按钮，`.topbar-actions` 容器与相关 CSS 一并移除）。
+2. 设置面板标题栏的“×”左侧新增“↑”按钮（`#scroll-top`，`aria-label="回到设置顶部"`），放进新的 `.panel-heading-actions`；标题栏本身是 `position: sticky; top: 0`，所以按钮与关闭按钮一起常驻在面板顶部，不随内容滚动。
+3. 面板标题栏内的图标按钮缩小为 38×38（`.panel-heading .icon-button`），两个按钮并排不挤压标题；原先为悬浮按钮写的 `.scroll-top-button` 固定定位与 `body.settings-open` 位移规则已删除。
+4. 行为：`scrollSettingsToTop()` 对 `#settings-panel` 调用 `scrollTo({ top: 0, behavior })`，`prefers-reduced-motion` 时用 `auto`；只回滚设置面板，不影响页面背景与壁纸控制栏。
+5. 验证：`tsc -b` 与 `vite build` 通过；预览实测主页面 `.topbar` 只有“打开设置”一个按钮，设置面板标题栏按钮顺序为“回到设置顶部 / 关闭设置”，标题栏 `position` 为 `sticky`；把面板滚到 310 px 后按钮仍在顶部同一位置，点击后 `scrollTop` 回到 0。
+6. 统一图标风格：关闭按钮原为文字“×”（字体粗细与视觉尺寸都不同于线性图标），现改为 SVG 线条图标（`m7 7 10 10` + `m17 7-10 10`），与“回到顶部”的箭头共用 `.icon-button svg` 的 18 px 尺寸、1.3 线宽与圆头圆角；设置面板、快捷方式对话框与用户选项对话框的关闭按钮一并统一。
+7. 文档：需求书 `4.9 → 4.10`，更新第 3 章布局说明与 AT-33；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.11）
+
+1. 按要求取消缩略图预加载：`observeWallpaperEngineThumbnails()` 的 `IntersectionObserver` 不再传 `rootMargin: '160px 0px'`，只有真正进入可视区的行才读取同目录 `project.json` 与项目预览图（并并发上限仍为 3）。
+2. 需求书 FR-02-12 同步删除“含预加载边距”描述；这一改动不影响“当前播放置顶”与“全部条目可见”的行为。
+3. `tsc -b` 与 `vite build` 通过；`dist` 已重建（`main-*.js` 75.15 kB / gzip 24.13 kB，WebWallGL 仍为 1.09 MB chunk），并逐项校验 `dist/index.html` 中 `scroll-top`、`settings-close`、`we-restore-removed`、`we-properties-dialog`、`wallpaper-name`、`icon-source`、`search-form` 均存在，三个关闭按钮均为 SVG 图标。
 
 ## 本地运行与安装
 

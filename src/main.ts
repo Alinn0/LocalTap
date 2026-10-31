@@ -1,8 +1,8 @@
-import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
-import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, deletePlaylistEntry, formatBytes, inspectMedia, listAssets, listPlaylistEntries, replacePlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
+import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, WallpaperPropertyValue, WallpaperUserProperty, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
+import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, removePlaylistEntry, replacePlaylistEntries, restoreRemovedPlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
 import { ICON_SOURCES, clearIconCache, fetchAndCacheIcon, getCachedIcon, hasIconPermission, iconCacheId, normalizedDomain, purgeLegacyUploadedIcons, requestIconPermission } from './icon-resolver';
 import { loadSettings, saveSettings } from './storage';
-import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
+import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, propertyOverridesFor, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
 import './style.css';
 
 const BACKUP_SCHEMA_VERSION = 3;
@@ -43,6 +43,11 @@ const weConfigInput = $('we-config-input') as HTMLInputElement;
 const weStatus = $('we-status') as HTMLParagraphElement;
 const weRandomButton = $('we-random') as HTMLButtonElement;
 const clearWePlayedButton = $('clear-we-played') as HTMLButtonElement;
+const restoreWeRemovedButton = $('we-restore-removed') as HTMLButtonElement;
+const wePropertiesDialog = $('we-properties-dialog') as HTMLDialogElement;
+const wePropertiesTitle = $('we-properties-title') as HTMLElement;
+const wePropertiesNote = $('we-properties-note') as HTMLParagraphElement;
+const wePropertiesList = $('we-properties-list') as HTMLDivElement;
 
 let settings: AppSettings = structuredClone(DEFAULT_SETTINGS);
 let media: MediaAsset[] = [];
@@ -69,6 +74,13 @@ let lastDirectPath: string | undefined;
 /** Chrome 的“允许访问文件网址”开关状态；undefined 表示当前环境无法查询。 */
 let fileSchemeAllowed: boolean | undefined;
 const wePreviewJobs = new Set<string>();
+/** 播放列表缩略图懒加载：并发上限与可视区队列。 */
+const WE_THUMB_CONCURRENCY = 3;
+const weThumbQueue: string[] = [];
+const weThumbQueued = new Set<string>();
+const weRowElements = new Map<string, HTMLElement>();
+let weThumbActive = 0;
+let weThumbObserver: IntersectionObserver | undefined;
 
 type SceneRendererResponse =
   | { type: 'renderer-ready' }
@@ -258,6 +270,7 @@ function setupEvents(): void {
 
   settingsToggle.addEventListener('click', () => setPanelOpen(settingsPanel.hidden));
   settingsClose.addEventListener('click', () => setPanelOpen(false));
+  $('scroll-top').addEventListener('click', scrollSettingsToTop);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !shortcutDialog.open && !settingsPanel.hidden) {
       setPanelOpen(false);
@@ -302,6 +315,10 @@ function setupEvents(): void {
   weRandomButton.addEventListener('click', () => void playRandomWallpaperEngineEntry({ reason: 'manual' }));
   $('we-probe').addEventListener('click', () => void probeDirectFileAccess());
   clearWePlayedButton.addEventListener('click', () => void clearPlayedWallpaperEngineEntries());
+  restoreWeRemovedButton.addEventListener('click', () => void restoreRemovedWallpaperEngineEntries());
+  $('we-properties-close').addEventListener('click', () => wePropertiesDialog.close());
+  $('we-properties-done').addEventListener('click', () => wePropertiesDialog.close());
+  $('we-properties-reset').addEventListener('click', () => void resetWallpaperEngineProperties());
   mediaConflictDialog.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[value]');
     if (button) mediaConflictDialog.close(button.value);
@@ -409,6 +426,12 @@ function setPanelOpen(open: boolean): void {
   if (open) settingsClose.focus();
 }
 
+/** 回到设置面板最顶上（面板是页面里唯一可滚动的区域）。 */
+function scrollSettingsToTop(): void {
+  const behavior: ScrollBehavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  settingsPanel.scrollTo({ top: 0, behavior });
+}
+
 function applySettingsToControls(): void {
   const searchEngineSelect = $('search-engine') as HTMLSelectElement;
   if (!searchEngineSelect.options.length) {
@@ -502,14 +525,19 @@ function applyMediaListCollapsed(): void {
   toggleMediaList.textContent = settings.mediaListCollapsed ? '展开' : '折叠';
   toggleMediaList.setAttribute('aria-expanded', String(!settings.mediaListCollapsed));
   toggleMediaList.setAttribute('aria-label', settings.mediaListCollapsed
-    ? (settings.backgroundSource === 'wallpaper-engine' ? '展开已播背景列表' : '展开壁纸列表')
-    : (settings.backgroundSource === 'wallpaper-engine' ? '折叠已播背景列表' : '折叠壁纸列表'));
+    ? (settings.backgroundSource === 'wallpaper-engine' ? '展开背景列表' : '展开壁纸列表')
+    : (settings.backgroundSource === 'wallpaper-engine' ? '折叠背景列表' : '折叠壁纸列表'));
 }
 
 function updateWeStatus(): void {
+  const active = playlistEntries.filter((entry) => !entry.removed);
   const played = playedWallpaperEngineEntries();
-  weRandomButton.disabled = playlistEntries.length === 0;
+  const removedCount = playlistEntries.length - active.length;
+  weRandomButton.disabled = active.length === 0;
   clearWePlayedButton.disabled = played.length === 0;
+  restoreWeRemovedButton.hidden = removedCount === 0;
+  restoreWeRemovedButton.disabled = removedCount === 0;
+  restoreWeRemovedButton.textContent = `恢复已移除（${removedCount}）`;
   if (settings.backgroundSource !== 'wallpaper-engine') {
     weStatus.hidden = true;
     return;
@@ -517,6 +545,11 @@ function updateWeStatus(): void {
   if (playlistEntries.length === 0) {
     weStatus.hidden = false;
     weStatus.textContent = '尚未读取 Wallpaper Engine 配置。点击“选择 WE 配置”读取 config.json 中的 playlist.items 地址。';
+    return;
+  }
+  if (active.length === 0) {
+    weStatus.hidden = false;
+    weStatus.textContent = `全部 ${playlistEntries.length} 项背景都已被移除，点击“恢复已移除”可以找回。`;
     return;
   }
   // 只有确认“读不到文件”时才提示，避免每开一个标签页都显示授权说明。
@@ -557,6 +590,7 @@ function renderMediaList(): void {
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
   mediaList.replaceChildren();
+  disconnectWallpaperEngineThumbnails();
   if (settings.backgroundSource === 'wallpaper-engine') {
     renderWallpaperEngineList();
     return;
@@ -610,51 +644,52 @@ function renderMediaList(): void {
 }
 
 function renderWallpaperEngineList(): void {
-  // 只列出“已播放且可用”的背景；缺失/无法播放的条目直接从列表中隐藏。
-  const played = playedWallpaperEngineEntries().filter((entry) => !entry.missing);
-  const hidden = playlistEntries.filter((entry) => entry.missing);
-  const available = playlistEntries.length - hidden.length;
-  $('media-count').textContent = playlistEntries.length
-    ? `播放列表 ${playlistEntries.length} 项 · 可用 ${available} 项${hidden.length ? ` · 已跳过 ${hidden.length} 项` : ''}`
+  // 显示配置中的全部播放列表条目；当前播放的排在最前，缩略图只对可视区的行按需读取。
+  const active = playlistEntries.filter((entry) => !entry.removed);
+  const removedCount = playlistEntries.length - active.length;
+  const total = active.length;
+  const missing = active.filter((entry) => entry.missing).length;
+  const playedCount = active.filter((entry) => entry.playedAt).length;
+  $('media-count').textContent = total
+    ? `播放列表 ${total} 项 · 可用 ${total - missing} 项 · 已播 ${playedCount} 项${missing ? ` · 已跳过 ${missing} 项` : ''}${removedCount ? ` · 已移除 ${removedCount} 项` : ''}`
     : '尚未读取 Wallpaper Engine 配置';
+  const currentId = settings.currentWallpaperEngineId;
+  const ordered = active
+    .slice()
+    .sort((a, b) => {
+      if (a.id === currentId) return -1;
+      if (b.id === currentId) return 1;
+      return (a.order ?? 0) - (b.order ?? 0);
+    });
   const query = mediaSearch.value.trim().toLocaleLowerCase();
   const visible = query
-    ? played.filter((entry) =>
+    ? ordered.filter((entry) =>
       (entry.title ?? '').toLocaleLowerCase().includes(query) ||
       entry.name.toLocaleLowerCase().includes(query))
-    : played;
+    : ordered;
   mediaListCount.textContent = query
-    ? `已播背景列表（${visible.length} / ${played.length} 项）`
-    : `已播背景列表（共 ${played.length} 项）`;
-  if (!playlistEntries.length) {
-    mediaListEmpty.textContent = '尚未读取 Wallpaper Engine 配置。';
-  } else if (!played.length) {
-    mediaListEmpty.textContent = '还没有播放过的背景。点击“随机换一张”开始。';
-  } else {
-    mediaListEmpty.textContent = '没有匹配的背景。';
-  }
+    ? `背景列表（${visible.length} / ${total} 项）`
+    : `背景列表（共 ${total} 项）`;
+  mediaListEmpty.textContent = total
+    ? '没有匹配的背景。'
+    : playlistEntries.length ? '所有背景都已移除，可点击“恢复已移除”找回。' : '尚未读取 Wallpaper Engine 配置。';
   mediaListEmptyShouldShow = visible.length === 0;
   mediaListEmpty.hidden = !mediaListEmptyShouldShow;
   for (const entry of visible) {
     const row = document.createElement('div');
     row.className = 'media-row';
+    row.dataset.entryId = entry.id;
+    if (entry.missing) row.classList.add('media-row-missing');
     const preview = document.createElement('div');
     preview.className = 'media-preview';
-    if (entry.preview) {
-      const previewUrl = URL.createObjectURL(entry.preview);
-      mediaPreviewUrls.push(previewUrl);
-      preview.style.backgroundImage = `url("${previewUrl}")`;
-    } else {
-      preview.textContent = entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
-    }
+    if (!entry.preview) preview.textContent = entry.kind === 'scene' ? '◈' : entry.kind === 'video' ? '▶' : '▧';
     const info = document.createElement('div');
     info.className = 'item-info';
     const displayName = wallpaperEngineDisplayName(entry);
     const name = document.createElement('strong');
     name.textContent = displayName;
     const detail = document.createElement('small');
-    const kindLabel = entry.kind === 'video' ? '视频' : entry.kind === 'scene' ? '场景包' : '图片';
-    detail.textContent = `${kindLabel} · 已播放`;
+    detail.textContent = wallpaperEngineDetailText(entry);
     info.append(name, detail);
     const actions = document.createElement('div');
     actions.className = 'item-actions';
@@ -662,11 +697,594 @@ function renderWallpaperEngineList(): void {
     play.dataset.playlistId = entry.id;
     const remove = createButton('×', `从背景列表移除 ${displayName}`, 'media-delete');
     remove.dataset.playlistId = entry.id;
-    actions.append(play, remove);
+    actions.append(play);
+    if (hasEditableProperties(entry)) actions.append(createPropertiesButton(entry));
+    actions.append(remove);
     row.append(preview, info, actions);
     mediaList.append(row);
+    weRowElements.set(entry.id, row);
+    if (entry.preview) applyWallpaperEngineRowPreview(row, entry.preview);
   }
+  observeWallpaperEngineThumbnails();
   applyMediaListCollapsed();
+}
+
+/** 该场景包是否声明了可编辑的用户选项（WE 保留项不算）。 */
+function hasEditableProperties(entry: WallpaperEngineEntry): boolean {
+  if (entry.kind !== 'scene' || !entry.userProperties?.length) return false;
+  return entry.userProperties.some((property) => !isReservedProperty(property));
+}
+
+function createPropertiesButton(entry: WallpaperEngineEntry): HTMLButtonElement {
+  const button = createButton('⚙', `配置 ${wallpaperEngineDisplayName(entry)}`, 'media-properties');
+  button.dataset.playlistId = entry.id;
+  return button;
+}
+
+function wallpaperEngineDetailText(entry: WallpaperEngineEntry): string {
+  const kindLabel = entry.kind === 'video' ? '视频' : entry.kind === 'scene' ? '场景包' : '图片';
+  const state = entry.missing ? '文件缺失' : entry.playedAt ? '已播放' : '未播放';
+  const fileName = entry.name === wallpaperEngineDisplayName(entry) ? '' : entry.name;
+  return [kindLabel, state, fileName].filter(Boolean).join(' · ');
+}
+
+function applyWallpaperEngineRowPreview(row: HTMLElement, preview: Blob): void {
+  const container = row.querySelector<HTMLElement>('.media-preview');
+  if (!container) return;
+  const previous = row.dataset.previewUrl;
+  if (previous) URL.revokeObjectURL(previous);
+  const url = URL.createObjectURL(preview);
+  row.dataset.previewUrl = url;
+  mediaPreviewUrls.push(url);
+  container.textContent = '';
+  container.style.backgroundImage = `url("${url}")`;
+}
+
+function updateWallpaperEngineRow(entry: WallpaperEngineEntry): void {
+  const row = weRowElements.get(entry.id);
+  if (!row) return;
+  const displayName = wallpaperEngineDisplayName(entry);
+  const name = row.querySelector('.item-info strong');
+  if (name) name.textContent = displayName;
+  const detail = row.querySelector('.item-info small');
+  if (detail) detail.textContent = wallpaperEngineDetailText(entry);
+  const play = row.querySelector<HTMLButtonElement>('button.media-play');
+  play?.setAttribute('aria-label', `播放 ${displayName}`);
+  const remove = row.querySelector<HTMLButtonElement>('button.media-delete');
+  remove?.setAttribute('aria-label', `从背景列表移除 ${displayName}`);
+  syncWallpaperEngineRowActions(row, entry);
+  if (entry.preview) applyWallpaperEngineRowPreview(row, entry.preview);
+}
+
+/** 元数据是懒加载的，读到用户选项后即时补上或去掉“配置”按钮。 */
+function syncWallpaperEngineRowActions(row: HTMLElement, entry: WallpaperEngineEntry): void {
+  const actions = row.querySelector<HTMLElement>('.item-actions');
+  if (!actions) return;
+  const existing = actions.querySelector<HTMLButtonElement>('button.media-properties');
+  if (!hasEditableProperties(entry)) {
+    existing?.remove();
+    return;
+  }
+  if (!existing) {
+    const remove = actions.querySelector('button.media-delete');
+    actions.insertBefore(createPropertiesButton(entry), remove ?? null);
+    return;
+  }
+  existing.dataset.playlistId = entry.id;
+  existing.setAttribute('aria-label', `配置 ${wallpaperEngineDisplayName(entry)}`);
+}
+
+function disconnectWallpaperEngineThumbnails(): void {
+  weThumbObserver?.disconnect();
+  weThumbObserver = undefined;
+  weThumbQueue.length = 0;
+  weThumbQueued.clear();
+  weRowElements.clear();
+}
+
+function observeWallpaperEngineThumbnails(): void {
+  if (typeof IntersectionObserver !== 'function') {
+    for (const entryId of weRowElements.keys()) enqueueWallpaperEngineThumbnail(entryId);
+    return;
+  }
+  // 不做预加载：只有真正进入可视区的行才读 project.json 与预览图。
+  const observer = new IntersectionObserver((records) => {
+    for (const record of records) {
+      if (!record.isIntersecting) continue;
+      observer.unobserve(record.target);
+      const entryId = (record.target as HTMLElement).dataset.entryId;
+      if (entryId) enqueueWallpaperEngineThumbnail(entryId);
+    }
+  });
+  for (const row of weRowElements.values()) observer.observe(row);
+  weThumbObserver = observer;
+}
+
+function enqueueWallpaperEngineThumbnail(entryId: string): void {
+  if (weThumbQueued.has(entryId)) return;
+  const entry = playlistEntries.find((item) => item.id === entryId);
+  if (!entry) return;
+  // 已有预览且项目信息也读过时无事可做；否则至少要读一次 project.json（决定是否显示“配置”按钮）。
+  const needMetadata = !entry.metadataCheckedAt;
+  const needPreview = !entry.preview && Boolean(entry.previewFile) && !entry.previewCheckedAt;
+  if (!needMetadata && !needPreview) return;
+  if (!IS_EXTENSION_CONTEXT || directReadState === 'failed' || fileSchemeAllowed === false) return;
+  weThumbQueued.add(entryId);
+  weThumbQueue.push(entryId);
+  pumpWallpaperEngineThumbnails();
+}
+
+function pumpWallpaperEngineThumbnails(): void {
+  while (weThumbActive < WE_THUMB_CONCURRENCY && weThumbQueue.length) {
+    const entryId = weThumbQueue.shift();
+    if (!entryId) return;
+    weThumbActive += 1;
+    void loadWallpaperEngineThumbnail(entryId)
+      .catch((error: unknown) => console.warn(`读取背景缩略图失败：${errorMessage(error)}`))
+      .finally(() => {
+        weThumbActive -= 1;
+        weThumbQueued.delete(entryId);
+        pumpWallpaperEngineThumbnails();
+      });
+  }
+}
+
+/**
+ * 懒加载单个条目的项目名与预览图：只读取同目录的小文件（project.json、
+ * 预览图），不读取媒体本体；结果按条目缓存，重新渲染时不会重复读盘。
+ */
+async function loadWallpaperEngineThumbnail(entryId: string): Promise<void> {
+  let entry = await ensureWallpaperEngineMetadata(entryId);
+  if (!entry || !entry.previewFile || entry.previewCheckedAt) return;
+  const index = playlistEntries.findIndex((item) => item.id === entryId);
+  if (index < 0) return;
+  const file = await readProjectPreview(entry.path, entry.previewFile, directFileReader);
+  const thumbnail = file ? await captureImagePreview(file) : undefined;
+  entry = {
+    ...entry,
+    previewCheckedAt: Date.now(),
+    ...(thumbnail ? { preview: thumbnail, previewFromProject: true } : {}),
+  };
+  playlistEntries[index] = entry;
+  try {
+    await savePlaylistEntry(entry);
+  } catch (error) {
+    console.warn(`保存背景缩略图失败：${errorMessage(error)}`);
+  }
+  updateWallpaperEngineRow(entry);
+}
+
+/**
+ * 读取同目录 project.json 以补齐背景名称与用户选项；每个条目只读一次。
+ * `force` 用于右键查看用户选项时重试此前读取失败的条目。
+ */
+const PROJECT_INFO_VERSION = 2;
+
+async function ensureWallpaperEngineMetadata(entryId: string, force = false): Promise<WallpaperEngineEntry | undefined> {
+  const index = playlistEntries.findIndex((item) => item.id === entryId);
+  if (index < 0) return undefined;
+  const entry = playlistEntries[index];
+  if (!force && entry.metadataCheckedAt && entry.propertiesCheckedAt
+    && entry.projectInfoVersion === PROJECT_INFO_VERSION) {
+    return entry;
+  }
+  const metadata = await readProjectMetadata(entry.path, directFileReader);
+  const updated: WallpaperEngineEntry = {
+    ...entry,
+    metadataCheckedAt: Date.now(),
+    ...(metadata ? { propertiesCheckedAt: Date.now(), projectInfoVersion: PROJECT_INFO_VERSION } : {}),
+    ...(metadata?.title ? { title: metadata.title } : {}),
+    ...(metadata?.preview ? { previewFile: metadata.preview } : {}),
+    ...(metadata?.properties ? { userProperties: metadata.properties } : {}),
+    ...(metadata?.projectInfo ? { projectInfo: metadata.projectInfo } : {}),
+  };
+  playlistEntries[index] = updated;
+  try {
+    await savePlaylistEntry(updated);
+  } catch (error) {
+    console.warn(`保存背景信息失败：${errorMessage(error)}`);
+  }
+  updateWallpaperEngineRow(updated);
+  renderWallpaperName();
+  return updated;
+}
+
+let propertyDialogEntryId: string | undefined;
+let propertyDialogRows: Array<{ row: HTMLElement; property: WallpaperUserProperty }> = [];
+
+/** 打开某条场景包的用户选项（由行内“配置”按钮触发）。 */
+async function showWallpaperEngineProperties(entryId: string): Promise<void> {
+  let entry = await ensureWallpaperEngineMetadata(entryId);
+  if (!entry) return;
+  // 之前读取失败或版本较旧（缺少项目声明）时，打开对话框再读一次。
+  if ((!entry.userProperties?.length || entry.projectInfoVersion !== PROJECT_INFO_VERSION)
+    && IS_EXTENSION_CONTEXT && directReadState !== 'failed') {
+    entry = (await ensureWallpaperEngineMetadata(entryId, true)) ?? entry;
+  }
+  propertyDialogEntryId = entry.id;
+  propertyDialogRows = [];
+  wePropertiesTitle.textContent = wallpaperEngineDisplayName(entry);
+  wePropertiesList.replaceChildren();
+  const properties = (entry.userProperties ?? []).filter((property) => !isReservedProperty(property));
+  if (!properties.length) {
+    const canRead = IS_EXTENSION_CONTEXT && directReadState !== 'failed' && fileSchemeAllowed !== false;
+    const known = entry.propertiesCheckedAt !== undefined;
+    if (canRead && known) {
+      notify(`${wallpaperEngineDisplayName(entry)} 没有可选配置（project.json 未声明用户选项）。`);
+      return;
+    }
+    wePropertiesNote.hidden = true;
+    wePropertiesList.append(createEmptyPropertiesHint());
+    if (!wePropertiesDialog.open) wePropertiesDialog.showModal();
+    return;
+  }
+  wePropertiesNote.hidden = false;
+  {
+    const customized = properties.filter((property) => entry.propertyOverrides?.[property.name] !== undefined).length;
+    wePropertiesNote.textContent = customized
+      ? `${properties.length} 项可选配置，其中 ${customized} 项已由你调整（蓝色标出）。改动会立即生效并保存在本机，不修改壁纸文件。`
+      : `${properties.length} 项可选配置，调整后立即生效并保存在本机，不修改壁纸文件。`;
+    for (const property of properties) {
+      const row = renderPropertyRow(entry, property);
+      propertyDialogRows.push({ row, property });
+      wePropertiesList.append(row);
+    }
+    applyPropertyConditions(entry);
+  }
+  if (!wePropertiesDialog.open) wePropertiesDialog.showModal();
+  $('we-properties-reset').hidden = !entry.propertyOverrides || !Object.keys(entry.propertyOverrides).length;
+}
+
+/** WE 的保留项（配色主题、音量等）不在壁纸内容里，不展示。 */
+function isReservedProperty(property: WallpaperUserProperty): boolean {
+  const name = property.name.toLowerCase();
+  return name === 'schemecolor' || name === 'volume' || name === '_imgdir' || name === 'imgdir';
+}
+
+/** 选项当前生效值：用户调整 > config.json 记录 > 壁纸默认值。 */
+function effectivePropertyValue(entry: WallpaperEngineEntry, property: WallpaperUserProperty): WallpaperPropertyValue | undefined {
+  const override = entry.propertyOverrides?.[property.name];
+  if (override !== undefined) return override;
+  const fromConfig = entry.configPropertyValues?.[property.name];
+  if (fromConfig !== undefined) return fromConfig;
+  return property.value;
+}
+
+/** 汇总要送给渲染器的属性表（只包含该壁纸声明过的选项）。 */
+function effectiveProperties(entry: WallpaperEngineEntry): Record<string, WallpaperPropertyValue> {
+  const result: Record<string, WallpaperPropertyValue> = {};
+  for (const property of entry.userProperties ?? []) {
+    const value = effectivePropertyValue(entry, property);
+    if (value !== undefined) result[property.name] = value;
+  }
+  return result;
+}
+
+/** WE 的 `condition` 只支持简单比较；解析不了就当可见，避免误藏选项。 */
+function evaluatePropertyCondition(condition: string | undefined, entry: WallpaperEngineEntry): boolean {
+  if (!condition) return true;
+  const text = condition.trim();
+  if (!text) return true;
+  if (text.toLowerCase() === 'false') return false;
+  if (text.toLowerCase() === 'true') return true;
+  const orParts = splitTopLevel(text, '||');
+  if (orParts.length > 1) return orParts.some((part) => evaluatePropertyCondition(part, entry));
+  const andParts = splitTopLevel(text, '&&');
+  if (andParts.length > 1) return andParts.every((part) => evaluatePropertyCondition(part, entry));
+  if (text.startsWith('(') && text.endsWith(')')) return evaluatePropertyCondition(text.slice(1, -1), entry);
+  const match = /^([a-z0-9_*.\-]+?)\.value\s*(==|!=|>=|<=|>|<)\s*(.+)$/i.exec(text);
+  if (!match) return true;
+  const [, name, operator, rawLiteral] = match;
+  const property = (entry.userProperties ?? []).find((item) => item.name.toLowerCase() === name.toLowerCase());
+  if (!property) return true;
+  const actual = effectivePropertyValue(entry, property);
+  const literal = parseConditionLiteral(rawLiteral);
+  if (literal === undefined) return true;
+  if (operator === '==' || operator === '!=') {
+    const equal = comparePropertyValues(actual, literal);
+    return operator === '==' ? equal : !equal;
+  }
+  const left = typeof actual === 'number' ? actual : Number(actual);
+  const right = typeof literal === 'number' ? literal : Number(literal);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return true;
+  if (operator === '>') return left > right;
+  if (operator === '<') return left < right;
+  if (operator === '>=') return left >= right;
+  return left <= right;
+}
+
+function splitTopLevel(text: string, separator: '&&' | '||'): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && text.startsWith(separator, index)) {
+      parts.push(text.slice(start, index));
+      index += separator.length - 1;
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+function parseConditionLiteral(raw: string): WallpaperPropertyValue | undefined {
+  const text = raw.trim();
+  if (/^(true|false)$/i.test(text)) return text.toLowerCase() === 'true';
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
+  const quoted = /^['"](.*)['"]$/.exec(text);
+  if (quoted) return quoted[1];
+  return undefined;
+}
+
+function comparePropertyValues(actual: WallpaperPropertyValue | undefined, literal: WallpaperPropertyValue): boolean {
+  if (actual === undefined) return false;
+  if (typeof actual === 'boolean' || typeof literal === 'boolean') {
+    return String(actual) === String(literal);
+  }
+  if (typeof actual === 'number' || typeof literal === 'number') {
+    const left = Number(actual);
+    const right = Number(literal);
+    if (Number.isFinite(left) && Number.isFinite(right)) return left === right;
+  }
+  return String(actual) === String(literal);
+}
+
+function applyPropertyConditions(entry: WallpaperEngineEntry): void {
+  for (const { row, property } of propertyDialogRows) {
+    row.hidden = !evaluatePropertyCondition(property.condition, entry);
+  }
+}
+
+function createEmptyPropertiesHint(): HTMLElement {
+  const hint = document.createElement('p');
+  hint.className = 'source-note';
+  hint.textContent = !IS_EXTENSION_CONTEXT
+    ? '当前是开发预览页面，浏览器禁止网页读取本地文件，读不到 project.json 中的用户选项。'
+    : directReadState === 'failed' || fileSchemeAllowed === false
+      ? '未开启“允许访问文件网址”，暂时读不到 project.json 中的用户选项。'
+      : '该场景包没有在 project.json 中声明可选配置。';
+  return hint;
+}
+
+const PROPERTY_TYPE_LABELS: Record<string, string> = {
+  bool: '开关',
+  color: '颜色',
+  slider: '滑块',
+  combo: '下拉',
+  textinput: '文本',
+};
+
+/** 渲染一行可编辑控件；改动立即写入条目并同步到正在播放的场景。 */
+function renderPropertyRow(entry: WallpaperEngineEntry, property: WallpaperUserProperty): HTMLElement {
+  const row = document.createElement('label');
+  row.className = 'property-row';
+  const name = document.createElement('div');
+  name.className = 'property-name';
+  const label = document.createElement('strong');
+  label.textContent = property.label;
+  const meta = document.createElement('small');
+  meta.textContent = propertyTypeLabel(property);
+  name.append(label, meta);
+  const cell = document.createElement('div');
+  cell.className = 'property-value';
+  const value = effectivePropertyValue(entry, property);
+  const input = createPropertyInput(entry, property, value, row);
+  cell.append(input);
+  if (entry.propertyOverrides?.[property.name] !== undefined) row.classList.add('is-custom');
+  row.append(name, cell);
+  return row;
+}
+
+function createPropertyInput(
+  entry: WallpaperEngineEntry,
+  property: WallpaperUserProperty,
+  value: WallpaperPropertyValue | undefined,
+  row: HTMLElement,
+): HTMLElement {
+  if (property.type === 'bool') {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = Boolean(value);
+    input.addEventListener('change', () => {
+      void applyPropertyChange(entry, property, input.checked, row);
+    });
+    return input;
+  }
+  if (property.type === 'slider') {
+    const min = property.min ?? 0;
+    const max = property.max ?? 100;
+    const step = property.step ?? (property.fraction ? 0.001 : 1);
+    const numeric = Number(value);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'property-slider';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : min);
+    const output = document.createElement('span');
+    output.textContent = formatPropertyNumber(Number(input.value));
+    input.addEventListener('input', () => {
+      output.textContent = formatPropertyNumber(Number(input.value));
+    });
+    input.addEventListener('change', () => {
+      void applyPropertyChange(entry, property, Number(input.value), row);
+    });
+    wrapper.append(input, output);
+    return wrapper;
+  }
+  if (property.type === 'combo' && property.options?.length) {
+    const select = document.createElement('select');
+    for (const option of property.options) {
+      const element = document.createElement('option');
+      element.value = option.value;
+      element.textContent = option.label;
+      select.append(element);
+    }
+    select.value = value === undefined ? property.options[0].value : String(value);
+    select.addEventListener('change', () => {
+      void applyPropertyChange(entry, property, select.value, row);
+    });
+    return select;
+  }
+  if (property.type === 'color') {
+    const rgb = typeof value === 'string' ? parseColorTriplet(value) : undefined;
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = rgb ? toHexColor(rgb) : '#ffffff';
+    input.addEventListener('change', () => {
+      const next = hexToTriplet(input.value);
+      void applyPropertyChange(entry, property, next, row);
+    });
+    return input;
+  }
+  // textinput 与其它只读值
+  if (property.type === 'textinput') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 200;
+    input.value = value === undefined ? '' : String(value);
+    input.addEventListener('change', () => {
+      void applyPropertyChange(entry, property, input.value, row);
+    });
+    return input;
+  }
+  const span = document.createElement('span');
+  span.textContent = propertyValueText(property, value);
+  return span;
+}
+
+async function applyPropertyChange(
+  entry: WallpaperEngineEntry,
+  property: WallpaperUserProperty,
+  value: WallpaperPropertyValue,
+  row: HTMLElement,
+): Promise<void> {
+  const index = playlistEntries.findIndex((item) => item.id === entry.id);
+  if (index < 0) return;
+  const current = playlistEntries[index];
+  const overrides = { ...(current.propertyOverrides ?? {}) };
+  // 调回壁纸默认值时不留 override，重新导入配置后仍能跟随 config.json。
+  if (property.value !== undefined && String(value) === String(property.value)) {
+    delete overrides[property.name];
+  } else {
+    overrides[property.name] = value;
+  }
+  const updated: WallpaperEngineEntry = {
+    ...current,
+    propertyOverrides: Object.keys(overrides).length ? overrides : undefined,
+  };
+  playlistEntries[index] = updated;
+  row.classList.toggle('is-custom', updated.propertyOverrides?.[property.name] !== undefined);
+  $('we-properties-reset').hidden = !updated.propertyOverrides || !Object.keys(updated.propertyOverrides).length;
+  applyPropertyConditions(updated);
+  if (settings.currentWallpaperEngineId === updated.id) {
+    // 只有拿到 project.json 的属性声明，引擎才能把值写回 scene.json 的 {user: ...} 绑定。
+    if (!updated.projectInfo) notifyMissingProjectDeclarations();
+    applySceneProperties(updated);
+  }
+  try {
+    await savePlaylistEntry(updated);
+  } catch (error) {
+    notify(`保存壁纸配置失败：${errorMessage(error)}`);
+  }
+}
+
+/** 把当前条目的属性值推给正在播放的场景（只在该条目正在显示时调用）。 */
+function applySceneProperties(entry: WallpaperEngineEntry): void {
+  const frame = sceneRendererFrame;
+  const token = sceneRendererToken;
+  if (!frame?.contentWindow || !token) return;
+  frame.contentWindow.postMessage({ type: 'properties', token, properties: effectiveProperties(entry) }, '*');
+}
+
+let missingDeclarationsNotified = false;
+
+/** 缺少 project.json 声明时，脚本类属性仍会更新，但画面绑定不会变，必须明确告知。 */
+function notifyMissingProjectDeclarations(): void {
+  if (missingDeclarationsNotified) return;
+  missingDeclarationsNotified = true;
+  notify('已保存设置，但读不到该壁纸的 project.json，画面可能不会立即变化：请在 chrome://extensions 打开“允许访问文件网址”后重新播放该背景。');
+}
+
+async function resetWallpaperEngineProperties(): Promise<void> {
+  const entryId = propertyDialogEntryId;
+  if (!entryId) return;
+  const index = playlistEntries.findIndex((item) => item.id === entryId);
+  if (index < 0) return;
+  const updated: WallpaperEngineEntry = { ...playlistEntries[index], propertyOverrides: undefined };
+  playlistEntries[index] = updated;
+  propertyDialogRows = [];
+  wePropertiesList.replaceChildren();
+  const properties = (updated.userProperties ?? []).filter((property) => !isReservedProperty(property));
+  for (const property of properties) {
+    const row = renderPropertyRow(updated, property);
+    propertyDialogRows.push({ row, property });
+    wePropertiesList.append(row);
+  }
+  applyPropertyConditions(updated);
+  wePropertiesNote.textContent = `${properties.length} 项可选配置，已恢复为壁纸与配置文件的默认值。`;
+  $('we-properties-reset').hidden = true;
+  if (settings.currentWallpaperEngineId === updated.id) applySceneProperties(updated);
+  try {
+    await savePlaylistEntry(updated);
+    notify('已恢复该壁纸的默认配置。');
+  } catch (error) {
+    notify(`恢复默认配置失败：${errorMessage(error)}`);
+  }
+}
+
+function propertyTypeLabel(property: WallpaperUserProperty): string {
+  const base = PROPERTY_TYPE_LABELS[property.type] ?? property.type;
+  if (property.type === 'slider') {
+    const range = property.min !== undefined && property.max !== undefined
+      ? ` ${formatPropertyNumber(property.min)}–${formatPropertyNumber(property.max)}`
+      : '';
+    return `${base}${range}`;
+  }
+  if (property.type === 'combo' && property.options) return `${base} · ${property.options.length} 个选项`;
+  return base;
+}
+
+function propertyValueText(property: WallpaperUserProperty, value: WallpaperPropertyValue | undefined): string {
+  if (value === undefined) return '（未设置）';
+  if (property.type === 'bool') return value ? '开' : '关';
+  if (property.type === 'combo') {
+    const option = property.options?.find((item) => item.value === String(value));
+    return option?.label ?? String(value);
+  }
+  if (typeof value === 'number') return formatPropertyNumber(value);
+  return String(value);
+}
+
+function formatPropertyNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10000) / 10000);
+}
+
+/** `0.733 0.533 0.478` 这类 0–1 浮点三元组转成 0–255。 */
+function parseColorTriplet(value: string): [number, number, number] | undefined {
+  const parts = value.trim().split(/\s+/).map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return undefined;
+  const scale = parts.some((part) => part > 1) ? 1 : 255;
+  return parts.map((part) => Math.max(0, Math.min(255, Math.round(part * scale)))) as [number, number, number];
+}
+
+/** WE 的颜色是 0–1 三元组字符串，这里在色板取值与字符串之间转换。 */
+function toHexColor(rgb: [number, number, number]): string {
+  return `#${rgb.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToTriplet(hex: string): string {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!match) return '1 1 1';
+  const value = match[1];
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
+  return channels.map((channel) => String(Math.round(channel * 1000) / 1000)).join(' ');
 }
 
 function activeBackgroundAsset(): MediaAsset | undefined {
@@ -675,23 +1293,24 @@ function activeBackgroundAsset(): MediaAsset | undefined {
 }
 
 function activePoolSize(): number {
-  return settings.backgroundSource === 'wallpaper-engine' ? playlistEntries.length : media.length;
+  return settings.backgroundSource === 'wallpaper-engine'
+    ? playlistEntries.filter((entry) => !entry.removed).length
+    : media.length;
 }
 
 function playedWallpaperEngineEntries(): WallpaperEngineEntry[] {
   return playlistEntries
-    .filter((entry) => Boolean(entry.playedAt))
+    .filter((entry) => Boolean(entry.playedAt) && !entry.removed)
     .sort((a, b) => (b.playedAt ?? 0) - (a.playedAt ?? 0));
 }
 
 function wallpaperEngineDisplayName(entry: WallpaperEngineEntry): string {
   const title = entry.title?.trim();
   if (title) return title;
-  if (entry.name.toLowerCase() === 'scene.pkg') {
-    const parts = entry.path.split('/');
-    const parent = parts[parts.length - 2];
-    if (parent) return `${parent}/${entry.name}`;
-  }
+  const parts = entry.path.split('/');
+  const parent = parts[parts.length - 2];
+  // 场景包文件名固定是 scene.pkg，改用所在作品目录名充当壁纸名。
+  if (entry.name.toLowerCase() === 'scene.pkg' && parent) return parent;
   return entry.name;
 }
 
@@ -721,7 +1340,7 @@ function wallpaperEngineRelativeRoot(): string {
 }
 
 function chooseRandomWallpaperEngineEntry(): WallpaperEngineEntry | undefined {
-  if (!playlistEntries.length) return undefined;
+  if (!playlistEntries.some((entry) => !entry.removed)) return undefined;
   const usable = availableWallpaperEngineEntries();
   if (!usable.length) return undefined;
   const current = settings.currentWallpaperEngineId;
@@ -732,12 +1351,13 @@ function chooseRandomWallpaperEngineEntry(): WallpaperEngineEntry | undefined {
 }
 
 /**
- * 可参与随机播放的条目：排除已确认缺失的背景。
- * 如果全部都被标记缺失（例如整个盘符被拔掉），退回完整列表以便重新探测。
+ * 可参与随机播放的条目：排除已移除与已确认缺失的背景。
+ * 如果全部都被标记缺失（例如整个盘符被拔掉），退回未移除的完整列表以便重新探测。
  */
 function availableWallpaperEngineEntries(): WallpaperEngineEntry[] {
-  const usable = playlistEntries.filter((entry) => !entry.missing);
-  return usable.length ? usable : playlistEntries;
+  const active = playlistEntries.filter((entry) => !entry.removed);
+  const usable = active.filter((entry) => !entry.missing);
+  return usable.length ? usable : active;
 }
 
 /** 不做状态标记的直读，用于探测与回退判断。 */
@@ -778,13 +1398,11 @@ async function enterWallpaperEngineMode(): Promise<void> {
     updateWeStatus();
     return;
   }
-  const current = playlistEntries.find((entry) => entry.id === settings.currentWallpaperEngineId);
+  const current = playlistEntries.find((entry) => entry.id === settings.currentWallpaperEngineId && !entry.removed);
   if (current && await playWallpaperEngineEntry(current.id, { silent: true })) {
-    void backfillWallpaperEngineMetadata();
     return;
   }
   await playRandomWallpaperEngineEntry({ reason: 'manual' });
-  void backfillWallpaperEngineMetadata();
 }
 
 async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'auto' | 'recover' }): Promise<void> {
@@ -794,6 +1412,14 @@ async function playRandomWallpaperEngineEntry(options: { reason: 'manual' | 'aut
   }
   const initialCurrent = settings.currentWallpaperEngineId;
   const usable = availableWallpaperEngineEntries();
+  if (!usable.length) {
+    currentWeAsset = undefined;
+    settings.currentWallpaperEngineId = null;
+    renderAll();
+    await persist();
+    if (options.reason === 'manual') notify('所有背景都已被移除，请点击“恢复已移除”找回。');
+    return;
+  }
   const pool = shuffleEntries(usable.filter((entry) => entry.id !== initialCurrent));
   const candidates = pool.length ? pool : shuffleEntries(usable.slice());
   let attempts = 0;
@@ -896,7 +1522,7 @@ async function checkMissingWallpaperEngineEntries(): Promise<void> {
     updateWeStatus();
     return;
   }
-  const targets = playlistEntries.filter((entry) => entry.kind !== 'scene' && !entry.checkedAt);
+  const targets = playlistEntries.filter((entry) => entry.kind !== 'scene' && !entry.checkedAt && !entry.removed);
   if (!targets.length) return;
   weCheckRunning = true;
   const queue = targets.slice();
@@ -1007,8 +1633,7 @@ async function loadWallpaperEngineAsset(entryId: string, options: { silent?: boo
       sourceUrl: toFileUrl(mediaPath),
     };
   }
-  const metadata = await readProjectMetadata(entry.path);
-  if (metadata) await applyWallpaperEngineMetadata(entry.id, metadata);
+  await ensureWallpaperEngineMetadata(entry.id);
   if (token !== weLoadToken) return false;
   settings.previousWallpaperEngineId = settings.currentWallpaperEngineId;
   settings.currentWallpaperEngineId = entry.id;
@@ -1046,8 +1671,11 @@ async function cacheWallpaperEnginePreview(entryId: string, source: Blob | strin
       directFileReader,
     );
     if (projectPreview) {
-      await applyWallpaperEnginePreview(entryId, projectPreview, true);
-      return;
+      const thumbnail = await captureImagePreview(projectPreview);
+      if (thumbnail) {
+        await applyWallpaperEnginePreview(entryId, thumbnail, true);
+        return;
+      }
     }
     if (entry.preview) return;
     const preview = entry.kind === 'video'
@@ -1059,48 +1687,6 @@ async function cacheWallpaperEnginePreview(entryId: string, source: Blob | strin
   } finally {
     wePreviewJobs.delete(entryId);
   }
-}
-
-async function applyWallpaperEngineMetadata(entryId: string, metadata: { title?: string; preview?: string }): Promise<void> {
-  const index = playlistEntries.findIndex((item) => item.id === entryId);
-  if (index < 0) return;
-  const entry = playlistEntries[index];
-  const title = metadata.title?.trim();
-  if ((!title || title === entry.title) && (!metadata.preview || metadata.preview === entry.previewFile)) return;
-  const updated: WallpaperEngineEntry = {
-    ...entry,
-    ...(title ? { title } : {}),
-    ...(metadata.preview ? { previewFile: metadata.preview } : {}),
-  };
-  playlistEntries[index] = updated;
-  try {
-    await savePlaylistEntry(updated);
-  } catch (error) {
-    console.warn(`保存 Wallpaper Engine 项目信息失败：${errorMessage(error)}`);
-  }
-  renderMediaList();
-}
-
-/**
- * 为已播记录补齐项目名与项目预览图（同目录 project.json），只处理列表中可见的已播条目，
- * 避免为整份播放列表逐个读取文件。
- */
-async function backfillWallpaperEngineMetadata(): Promise<boolean> {
-  const pending = playlistEntries.filter((entry) => Boolean(entry.playedAt) &&
-    (!entry.title || (entry.previewFile && !entry.previewFromProject)));
-  if (!pending.length || directReadState !== 'ok') return false;
-  let updated = false;
-  for (const entry of pending) {
-    const metadata = await readProjectMetadata(entry.path, directFileReader);
-    if (!metadata) continue;
-    await applyWallpaperEngineMetadata(entry.id, metadata);
-    updated = true;
-    if (metadata.preview) {
-      const projectPreview = await readProjectPreview(entry.path, metadata.preview, directFileReader);
-      if (projectPreview) await applyWallpaperEnginePreview(entry.id, projectPreview, true);
-    }
-  }
-  return updated;
 }
 
 async function applyWallpaperEnginePreview(entryId: string, preview: Blob, fromProject = false): Promise<void> {
@@ -1134,10 +1720,14 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
       notify('配置中没有找到受支持的壁纸路径（MP4、WebM、JPEG、PNG、WebP 或 PKGV .pkg）。');
       return;
     }
-    playlistEntries = await replacePlaylistEntries(parsed.entries);
+    const entries = parsed.entries.map((entry) => {
+      const overrides = propertyOverridesFor(parsed.propertyValues, entry.path, entry.monitor);
+      return overrides ? { ...entry, configPropertyValues: overrides } : entry;
+    });
+    playlistEntries = await replacePlaylistEntries(entries);
     settings.wallpaperConfigName = file.name;
     settings.backgroundSource = 'wallpaper-engine';
-    if (!playlistEntries.some((entry) => entry.id === settings.currentWallpaperEngineId)) {
+    if (!playlistEntries.some((entry) => entry.id === settings.currentWallpaperEngineId && !entry.removed)) {
       settings.currentWallpaperEngineId = null;
       currentWeAsset = undefined;
     }
@@ -1147,7 +1737,13 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
     const skipped = parsed.skipped
       ? `，跳过 ${parsed.skipped} 项（网页壁纸 ${parsed.skippedWeb}、其它 ${parsed.skippedOther}）`
       : '';
-    notify(`已读取 ${parsed.entries.length} 个背景${skipped}。`);
+    const user = parsed.user ? `${parsed.user} 的 ` : '';
+    const ignored = parsed.ignoredUsers.length
+      ? `，忽略其它用户配置 ${parsed.ignoredUsers.length} 个`
+      : '';
+    const removedCount = playlistEntries.filter((entry) => entry.removed).length;
+    const removed = removedCount ? `，${removedCount} 项保持已移除` : '';
+    notify(`已读取${user}${entries.length} 个背景${skipped}${ignored}${removed}。`);
     void enterWallpaperEngineMode();
     // 导入后自动检查一次文件是否存在，把缺失项从随机播放中排除。
     void checkMissingWallpaperEngineEntries();
@@ -1293,6 +1889,18 @@ async function clearPlayedWallpaperEngineEntries(): Promise<void> {
   }
 }
 
+async function restoreRemovedWallpaperEngineEntries(): Promise<void> {
+  const removedCount = playlistEntries.filter((entry) => entry.removed).length;
+  if (!removedCount) return;
+  try {
+    playlistEntries = await restoreRemovedPlaylistEntries();
+    renderAll();
+    notify(`已恢复 ${removedCount} 项背景，重新参与随机切换。`);
+  } catch (error) {
+    notify(`恢复已移除背景失败：${errorMessage(error)}`);
+  }
+}
+
 function shuffleEntries<T>(items: T[]): T[] {
   const copy = items.slice();
   for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -1302,9 +1910,9 @@ function shuffleEntries<T>(items: T[]): T[] {
   return copy;
 }
 
-/** 是否已有任何可用壁纸：本地媒体库有导入，或播放列表里有背景。 */
+/** 是否已有任何可用壁纸：本地媒体库有导入，或播放列表里有未移除的背景。 */
 function hasAnyWallpaper(): boolean {
-  return media.length > 0 || playlistEntries.length > 0;
+  return media.length > 0 || playlistEntries.some((entry) => !entry.removed);
 }
 
 function renderShortcuts(): void {
@@ -1359,7 +1967,6 @@ async function applyShortcutIcon(icon: HTMLSpanElement, url: string, fallback: s
 
 interface IconSyncReport {
   updated: number;
-  fallbackUsed: number;
   failures: Array<{ domain: string; message: string }>;
   permissionDenied: boolean;
 }
@@ -1370,17 +1977,15 @@ async function syncShortcutIcons(): Promise<IconSyncReport> {
     const domain = normalizedDomain(shortcut.url);
     if (domain && !targets.has(domain)) targets.set(domain, shortcut.url);
   }
-  if (!targets.size) return { updated: 0, fallbackUsed: 0, failures: [], permissionDenied: false };
+  if (!targets.size) return { updated: 0, failures: [], permissionDenied: false };
   const source = settings.iconSource;
-  if (!(await hasIconPermission(source))) return { updated: 0, fallbackUsed: 0, failures: [], permissionDenied: true };
+  if (!(await hasIconPermission(source))) return { updated: 0, failures: [], permissionDenied: true };
   let updated = 0;
-  let fallbackUsed = 0;
   const failures: IconSyncReport['failures'] = [];
-  for (const [domain, pageUrl] of targets) {
+  for (const [domain] of targets) {
     try {
       if (await getCachedIcon(source, domain)) continue;
-      const result = await fetchAndCacheIcon(source, domain, pageUrl);
-      if (result.fallbackUsed) fallbackUsed += 1;
+      await fetchAndCacheIcon(source, domain);
       updated += 1;
     } catch (error) {
       failures.push({ domain, message: errorMessage(error) });
@@ -1389,7 +1994,7 @@ async function syncShortcutIcons(): Promise<IconSyncReport> {
   if (updated > 0) {
     renderShortcuts();
   }
-  return { updated, fallbackUsed, failures, permissionDenied: false };
+  return { updated, failures, permissionDenied: false };
 }
 
 function reportIconSync(source: IconSource, report: IconSyncReport): void {
@@ -1399,16 +2004,12 @@ function reportIconSync(source: IconSource, report: IconSyncReport): void {
   }
   for (const failure of report.failures) console.warn(`获取 ${failure.domain} 的图标失败：${failure.message}`);
   if (!report.failures.length) {
-    if (report.updated) {
-      const fallback = report.fallbackUsed ? `（其中 ${report.fallbackUsed} 个由 Chrome 内置图标回退获取）` : '';
-      notify(`已获取并缓存 ${report.updated} 个网站图标${fallback}。`);
-    }
+    if (report.updated) notify(`已获取并缓存 ${report.updated} 个网站图标。`);
     return;
   }
   const details = report.failures.slice(0, 2).map(({ domain, message }) => `${domain}：${message}`).join('；');
   const remaining = report.failures.length > 2 ? `，另有 ${report.failures.length - 2} 个失败，详情见控制台` : '';
-  const fallback = report.fallbackUsed ? `（${report.fallbackUsed} 个使用 Chrome 内置图标回退）` : '';
-  notify(`图标获取成功 ${report.updated} 个，失败 ${report.failures.length} 个${fallback}。${details}${remaining}`);
+  notify(`图标获取成功 ${report.updated} 个，失败 ${report.failures.length} 个。${details}${remaining}`);
 }
 
 async function changeIconSource(): Promise<void> {
@@ -1557,6 +2158,27 @@ function renderPlaybackStatus(): void {
   const playing = video ? !video.paused : Boolean(sceneRendererFrame && !sceneRendererPaused);
   $('toggle-playback').textContent = playing ? 'Ⅱ' : '▶';
   $('toggle-playback').setAttribute('aria-label', playing ? '暂停壁纸' : '播放壁纸');
+  renderWallpaperName();
+}
+
+/** 左下角控制栏显示当前背景的名称；没有背景时隐藏。 */
+function renderWallpaperName(): void {
+  const name = $('wallpaper-name');
+  const label = currentBackgroundName();
+  name.textContent = label ?? '';
+  name.title = label ?? '';
+  name.hidden = !label;
+}
+
+function currentBackgroundName(): string | undefined {
+  if (settings.backgroundSource === 'wallpaper-engine') {
+    // 只有确实加载成功的背景才显示名字，避免残留旧名字误导。
+    if (!currentWeAsset) return undefined;
+    const entry = playlistEntries.find((item) => item.id === currentWeAsset?.id);
+    return entry ? wallpaperEngineDisplayName(entry) : undefined;
+  }
+  const asset = media.find((item) => item.id === settings.currentMediaId);
+  return asset?.name;
 }
 
 const SCENE_POINTER_BLOCKING_SELECTOR = '.topbar, .footer, .search, .shortcut-tile, .settings-panel, .toast, dialog';
@@ -1662,6 +2284,7 @@ async function sendScenePackage(): Promise<void> {
   const current = activeBackgroundAsset();
   if (!frame || !token || !current || current.kind !== 'scene' || !frame.contentWindow) return;
   sceneRendererSent = true;
+  const entry = playlistEntries.find((item) => item.id === current.id);
   try {
     const bytes = await current.blob.arrayBuffer();
     if (sceneRendererFrame !== frame || sceneRendererToken !== token) return;
@@ -1671,6 +2294,8 @@ async function sendScenePackage(): Promise<void> {
       bytes,
       key: `localtab:${current.id}`,
       title: current.name,
+      project: entry?.projectInfo,
+      properties: entry ? effectiveProperties(entry) : {},
     }, '*', [bytes]);
   } catch (error) {
     notify(`读取场景包失败：${errorMessage(error)}`);
@@ -1824,17 +2449,23 @@ async function handleMediaAction(event: Event): Promise<void> {
       await playWallpaperEngineEntry(entry.id, {});
       return;
     }
-    // × 直接从播放列表中删除该条目（不只是清空已播标记）。
-    await deletePlaylistEntry(entry.id);
-    playlistEntries = playlistEntries.filter((item) => item.id !== entry.id);
+    if (button.classList.contains('media-properties')) {
+      await showWallpaperEngineProperties(entry.id);
+      return;
+    }
+    // × 把该条目移出背景列表与随机池；重新导入配置后仍保持移除，可用“恢复已移除”找回。
+    await removePlaylistEntry(entry);
+    entry.removed = true;
+    const remaining = playlistEntries.filter((item) => !item.removed).length;
     if (settings.currentWallpaperEngineId === entry.id) {
       settings.currentWallpaperEngineId = null;
       settings.previousWallpaperEngineId = null;
       currentWeAsset = undefined;
+      releaseActiveUrl();
     }
     await persist();
     renderAll();
-    notify(`已从背景列表删除：${wallpaperEngineDisplayName(entry)}（共 ${playlistEntries.length} 项）`);
+    notify(`已从背景列表移除：${wallpaperEngineDisplayName(entry)}（剩余 ${remaining} 项，可用“恢复已移除”找回）`);
     return;
   }
   const asset = media.find((item) => item.id === button.dataset.id);
@@ -2084,8 +2715,7 @@ async function importBackup(file: File): Promise<void> {
   try {
     const parsed: unknown = JSON.parse(await file.text());
     const backup = validateBackup(parsed);
-    const replace = window.confirm('点击“确定”替换现有配置；点击“取消”则合并快捷方式。替换前会自动下载当前配置恢复点。');
-    if (replace) await exportBackup();
+    const replace = window.confirm('点击“确定”替换现有配置；点击“取消”则合并快捷方式。替换前不会自动下载恢复点，如需保留当前配置请先导出 JSON。');
     const importedShortcuts: Shortcut[] = [];
     for (const entry of backup.settings.shortcuts) {
       const domain = normalizedDomain(entry.url);
@@ -2163,9 +2793,7 @@ function validateBackup(value: unknown): BackupData {
     }
     icons[key] = { type: icon.type, data: icon.data };
   }
-  const iconSource: IconSource = record.settings.iconSource === 'browser'
-    ? 'browser'
-    : record.settings.iconSource === 'international' ? 'international' : 'domestic';
+  const iconSource: IconSource = record.settings.iconSource === 'international' ? 'international' : 'domestic';
   const searchEngine = SEARCH_ENGINES.some((engine) => engine.id === record.settings!.searchEngine)
     ? record.settings!.searchEngine as SearchEngineId
     : DEFAULT_SETTINGS.searchEngine;
