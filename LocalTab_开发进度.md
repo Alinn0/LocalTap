@@ -1,6 +1,6 @@
 # LocalTab 开发进度
 
-**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 4.10）
+**对应任务书：** `LocalTab_软件需求与任务规格说明.md`（文档版本 4.13）
 
 **记录日期：** 2026-10-31
 
@@ -31,9 +31,11 @@
 - [x] 直读生效后状态提示整行隐藏；未生效时只显示不含本机绝对路径的相对目录（如 `steamapps/workshop/content/431960`），并区分“开关被关闭”与“读不到文件”两种原因。
 - [x] Wallpaper Engine 模式的列表显示配置中的全部播放列表条目，**当前播放的条目固定排在最前**，其余按配置顺序；统计行显示“播放列表 N 项 · 可用 M 项 · 已播 K 项”；名称优先取同目录 `project.json` 的 `title`，缩略图优先用项目 `preview.*`；缩略图与项目信息只为滚动进入可视区的行懒加载（并发 3，预览缩放到 ≤320 px），未滚到的行只显示类型图标；提供“清除已播记录”（仅清除已播时间与预览，保留条目）。
 - [x] 缺失与不受支持的条目自动跳过：导入配置后后台检查一次（视频只读元数据、图片只解码一次、并发 4、8 秒超时视为未知），播放失败且通道正常时补充标记；被标记条目不进入随机池，在背景列表中置灰并标注“文件缺失”，统计行显示“已跳过 N 项”，无手动重查按钮。
-- [x] 背景列表的 × 改为**软删除**：条目写入 `removed` 标记后从列表与随机池移除，重开页面、重新导入 `config.json` 都不会再随机到；统计行显示“已移除 N 项”，设置面板出现“恢复已移除（N）”按钮可一键找回；移除当前正在播放的背景时回退默认渐变。
+- [x] 背景列表的 × 改为**软删除**：条目写入 `removed` 标记后从列表与随机池移除，重开页面、重新导入 `config.json` 都不会再随机到；统计行显示“已移除 N 项”，设置面板出现“恢复已移除（N）”按钮可一键找回；**移除正在播放的背景时立即自动切换到剩余可播放条目，不停留在无背景状态**，仅当剩余为 0 或全部不可播放时才回退默认渐变并提示。
 - [x] 场景包可调整**用户选项**（类同 WE 客户端的配置面板）：**声明了可编辑选项的行在操作区显示“⚙ 配置”按钮**（无选项时无按钮，不使用右键菜单）——读取 `project.json` 的 `general.properties`，复选框/滑块/下拉/取色器/文本框直接编辑，改动即时通过 `setProperties` 推给渲染页并持久化到条目；`config.json` 的 `wproperties` 作为初始值，支持“恢复默认”；`schemecolor`、`volume` 等 WE 保留项与不可编辑类型不展示，`condition` 实时求值控制显隐。
+- [x] 场景包“⚙ 配置”对所有场景包可用，并内置“水平位置 / 垂直位置”两个滑块（-100…100，0 居中）：渲染页把画布按 1.24 倍放大后在余量内平移，平移不露黑边；两轴独立可调（WE 客户端只能调 X），值存 `viewOffsetX` / `viewOffsetY`，实时下发并持久化，“恢复默认”一并清零。
 - [x] 场景包渲染帧率上限跟随显示器刷新率：加载前用 rAF 采样估算（24–240），采样不足时用 240，不再固定 30 fps。
+- [x] WE 配置文件位置会被记住并可一键刷新：选择 `config.json` 时通过 `showOpenFilePicker` 取文件句柄（存 IndexedDB），并记录 `wallpaperConfigPath`（由 `?installdirectory` 推导为 `<installdirectory>/config.json`）；再次选择时对话框从该句柄所在目录打开并预填 `config.json`；新增“刷新壁纸列表”按钮，用句柄直接重读同一文件（不弹对话框、不需要文件访问权限），保留已播/缩略图/已移除/用户选项，当前播放的背景保持不变，记住的句柄失效时退回按路径直读或提示重新选择。
 - [x] 视频与图片使用 `file://` 地址流式播放（不整文件读入内存），可播放 GB 级文件；切换后只回收自己创建的 Blob URL。
 - [x] 页面引导文案“导入一张壁纸或添加快捷方式，开始打造你的新标签页。”只在完全空白状态（无壁纸、无快捷方式）显示。
 - [x] Wallpaper Engine 背景在启动、手动上一张/下一张和自动切换时从配置地址随机抽取候选并逐个尝试；成功加载后重新计时。
@@ -470,6 +472,34 @@
 1. 按要求取消缩略图预加载：`observeWallpaperEngineThumbnails()` 的 `IntersectionObserver` 不再传 `rootMargin: '160px 0px'`，只有真正进入可视区的行才读取同目录 `project.json` 与项目预览图（并并发上限仍为 3）。
 2. 需求书 FR-02-12 同步删除“含预加载边距”描述；这一改动不影响“当前播放置顶”与“全部条目可见”的行为。
 3. `tsc -b` 与 `vite build` 通过；`dist` 已重建（`main-*.js` 75.15 kB / gzip 24.13 kB，WebWallGL 仍为 1.09 MB chunk），并逐项校验 `dist/index.html` 中 `scroll-top`、`settings-close`、`we-restore-removed`、`we-properties-dialog`、`wallpaper-name`、`icon-source`、`search-form` 均存在，三个关闭按钮均为 SVG 图标。
+
+## 本次修改记录（任务书 4.12）
+
+1. 记住 WE 配置文件位置：设置 `AppSettings` 新增 `wallpaperConfigPath`（默认空串，`normalizeSettings` 与备份 `validateBackup` 同步校验，长度上限 500），导出备份时随 `...settings` 一起写出。路径由配置内的 `?installdirectory` 推导：`wallpaper-engine.ts` 新增 `readInstallDirectory()` 与 `configPathFromInstallDirectory()`，`ParsedWallpaperConfig` 增加 `installDirectory`。
+2. 选择配置改用 File System Access：新增 `src/file-system-access.d.ts` 补齐 `showOpenFilePicker`/`queryPermission` 类型；`media-db.ts` 用既有 `handles` 仓库（数据库版本升到 3）保存 `we-config` 句柄，新增 `saveConfigFileHandle()`/`loadConfigFileHandle()`/`clearConfigFileHandle()`。`pickWallpaperEngineConfig()` 以已存句柄作为 `startIn` 并预填 `config.json`；句柄失效（文件被移动/删除）时自动退回不带起始位置再弹一次；环境不支持该 API 时退回原 `<input type=file>`。
+3. 新增“刷新壁纸列表”按钮（`#refresh-we-config`，位于“选择 WE 配置”与“获取权限”之间）：未记住配置时禁用；点击后优先用句柄 `getFile()` 重读（期间用 `ensureConfigHandlePermission()` 检查/申请 `read` 权限），句柄不可用时退回按 `wallpaperConfigPath` 用 `file://` 直读；两条路都不可用则提示重新选择。
+4. 刷新复用 `importWallpaperEngineConfig(file, { handle?, refresh? })`：合并时保留已播时间、缩略图、已移除标记、用户选项调整与 `projectInfo`；`refresh` 模式下只要当前背景仍在配置中就不调用 `enterWallpaperEngineMode()`，播放的画面保持不动，否则清空后随机换一张；提示语为“已刷新配置…”而不是“已读取…”。
+5. 状态行在“没有条目但有上次配置”时显示“上次的配置：<路径>，可点击刷新壁纸列表重新读取”。
+6. 验证：`tsc -b` 与 `vite build` 通过（`main-*.js` 78.20 kB）；预览中用桩替换 `showOpenFilePicker` 实测——选择后得到 2 个背景、`wallpaperConfigPath = E:/Fake/wallpaper_engine/config.json`；再次点刷新不弹对话框、条目数不变、路径保持；无配置时刷新按钮为禁用；点击刷新在预览环境给出“读不到本地文件”的预期提示。真实目录起始位置与“刷新时保持当前画面”需在已加载扩展中按 AT-58/AT-59 复核。
+7. 文档：需求书 `4.10 → 4.11`，新增 FR-02-20 与 AT-58、AT-59；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.13）
+
+1. 移除正在播放的背景时自动切换：`handleMediaAction()` 的 WE 行 × 分支先记录 `wasCurrent`，软删除并 `renderAll()` 后，若移除的正是当前背景且 `remaining > 0`，立即调用 `playRandomWallpaperEngineEntry({ reason: 'recover' })` 换一张可播放的背景，不再停留在默认渐变、也不需要用户手动点“随机换一张”。
+2. 提示语区分两种情况：自动切换时提示“已从背景列表移除：X，正在自动切换背景（剩余 N 项）”；移除的不是当前背景（或已无剩余条目）时保持原提示“已从背景列表移除：X（剩余 N 项，可用“恢复已移除”找回）”。
+3. 切换失败仍走既有兜底：候选逐个尝试（最多 8 个），全部失败才回退默认渐变并给出可读提示；剩余条目为 0 时保持默认渐变与“全部已移除”提示。
+4. 验证：`tsc -b` 与 `vite build` 通过。预览中构造 3 个条目并移除当前项，观察到移除后立刻进入随机切换流程（`playRandomWallpaperEngineEntry` 的失败分支提示覆盖了移除提示），说明自动切换已被触发；因预览页禁止 `file://`，成功渲染需在已加载扩展中按 AT-60 复核。
+5. 文档：需求书 `4.11 → 4.12`，改写 FR-02-17 的移除语义并新增 AT-60；进度书同步版本与日期（2026-10-31）。
+
+## 本次修改记录（任务书 4.14）
+
+1. 配置面板增加内置的**显示位置**滑块（不依赖 `project.json`）：
+   - `models.ts` 用 `viewOffsetX` / `viewOffsetY`（-100…100，0 为居中）取代上一版单一 `viewOffset`；`media-db.replacePlaylistEntries()` 合并时保留两轴。
+   - `hasEditableProperties()` 改为“所有场景包都可配置”，因此没有声明选项的场景包也显示“⚙”；`renderViewOffsetRows()` 生成“水平位置 / 垂直位置”两行，排在选项列表最前，滑块旁实时显示“居中 / 左 40 / 上 60”。
+   - `applyViewOffsetChange(entryId, axis, value)` 按轴写入并持久化，`applySceneView()` 以 `{ type: 'view', x, y }` 实时下发；`sendScenePackage()` 在 `load` 消息里附 `viewX` / `viewY`，重新加载即恢复；`resetWallpaperEngineProperties()` 同时清除选项与两轴。
+2. 渲染页：`scene-renderer.ts` 维护 `currentViewX/Y`，新增 `view` 消息处理；`applyView()` 把画布放大到 124% 并按轴平移，平移量 = 24% × (值+100)/200，因此 -100 贴左/上、0 居中、100 贴右/下，任何位置都不露空白；`scene-renderer.html` 给 `#scene-host` 加 `position: relative` 以便绝对定位画布。
+3. 验证：`tsc -b` 通过；预览实测——有选项场景显示“水平位置 / 垂直位置 / Camera1 / PosX”四行，无选项场景只显示两个位置滑块；把 X 设为 40、Y 设为 -60 后 IndexedDB 中 `viewOffsetX=40`、`viewOffsetY=-60`，刷新后重新打开滑块仍是 40 / -60 且标签为“右 40”“上 60”；点“恢复默认”后两轴清空、滑块归 0、提示“已恢复该壁纸的默认配置。”。视频/图片行仍没有“⚙”。
+4. 文档：需求书 `4.12 → 4.13`，FR-02-18 改为“所有场景包可配置”并补充位置滑块规格，新增 AT-61；进度书同步版本与日期（2026-10-31）。
 
 ## 本地运行与安装
 

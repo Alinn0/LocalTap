@@ -117,6 +117,9 @@ export interface WallpaperEngineEntry {
   propertiesCheckedAt?: number;
   /** 项目声明（`projectInfo`）的解析版本；低于当前版本时会重新读取一次 project.json。 */
   projectInfoVersion?: number;
+  /** 用户调整的画面位置（-100…100，0 为居中）；内容比视口大时修正取景。X 向左为负，Y 向上为负。 */
+  viewOffsetX?: number;
+  viewOffsetY?: number;
   /** 在配置文件播放列表中的顺序，用于列表展示。 */
   order?: number;
 }
@@ -131,6 +134,8 @@ export interface AppSettings {
   currentWallpaperEngineId: string | null;
   previousWallpaperEngineId: string | null;
   wallpaperConfigName: string;
+  /** 上次读取的 WE 配置文件位置（由 config.json 的 `?installdirectory` 推出；仅作记录与直读回退）。 */
+  wallpaperConfigPath: string;
   iconSource: IconSource;
   searchEngine: SearchEngineId;
   controlsCollapsed: boolean;
@@ -147,6 +152,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   currentWallpaperEngineId: null,
   previousWallpaperEngineId: null,
   wallpaperConfigName: '',
+  wallpaperConfigPath: '',
   iconSource: 'domestic',
   searchEngine: 'baidu',
   controlsCollapsed: false,

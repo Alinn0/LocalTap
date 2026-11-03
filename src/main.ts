@@ -1,8 +1,8 @@
 import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, WallpaperPropertyValue, WallpaperUserProperty, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
-import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, removePlaylistEntry, replacePlaylistEntries, restoreRemovedPlaylistEntries, saveAsset, savePlaylistEntry } from './media-db';
+import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, loadConfigFileHandle, removePlaylistEntry, replacePlaylistEntries, restoreRemovedPlaylistEntries, saveAsset, saveConfigFileHandle, savePlaylistEntry } from './media-db';
 import { ICON_SOURCES, clearIconCache, fetchAndCacheIcon, getCachedIcon, hasIconPermission, iconCacheId, normalizedDomain, purgeLegacyUploadedIcons, requestIconPermission } from './icon-resolver';
 import { loadSettings, saveSettings } from './storage';
-import { mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, propertyOverridesFor, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
+import { configPathFromInstallDirectory, mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, propertyOverridesFor, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
 import './style.css';
 
 const BACKUP_SCHEMA_VERSION = 3;
@@ -40,6 +40,7 @@ const backgroundSourceSelect = $('background-source') as HTMLSelectElement;
 const libraryControls = $('library-controls') as HTMLDivElement;
 const weControls = $('we-controls') as HTMLDivElement;
 const weConfigInput = $('we-config-input') as HTMLInputElement;
+const refreshWeConfigButton = $('refresh-we-config') as HTMLButtonElement;
 const weStatus = $('we-status') as HTMLParagraphElement;
 const weRandomButton = $('we-random') as HTMLButtonElement;
 const clearWePlayedButton = $('clear-we-played') as HTMLButtonElement;
@@ -71,6 +72,8 @@ let weLoadToken = 0;
 let mediaListEmptyShouldShow = false;
 let directReadState: 'unknown' | 'ok' | 'failed' = 'unknown';
 let lastDirectPath: string | undefined;
+/** 用户上次选择的 WE 配置文件句柄：用于“下次默认打开同一目录”与“刷新重读”。 */
+let configFileHandle: FileSystemFileHandle | undefined;
 /** Chrome 的“允许访问文件网址”开关状态；undefined 表示当前环境无法查询。 */
 let fileSchemeAllowed: boolean | undefined;
 const wePreviewJobs = new Set<string>();
@@ -124,6 +127,7 @@ async function start(): Promise<void> {
     settings = await loadSettings();
     media = (await listAssets()).filter((asset) => asset.kind !== 'icon');
     playlistEntries = await listPlaylistEntries();
+    configFileHandle = await loadConfigFileHandle().catch(() => undefined);
     await purgeLegacyUploadedIcons();
     // 先确认“允许访问文件网址”开关与小文件可读性，避免首帧渲染前误显示提示。
     if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length && IS_EXTENSION_CONTEXT) {
@@ -307,11 +311,12 @@ function setupEvents(): void {
     void persist();
     renderAll();
   });
-  $('choose-we-config').addEventListener('click', () => weConfigInput.click());
+  $('choose-we-config').addEventListener('click', () => void pickWallpaperEngineConfig());
   weConfigInput.addEventListener('change', () => {
     if (weConfigInput.files?.[0]) void importWallpaperEngineConfig(weConfigInput.files[0]);
     weConfigInput.value = '';
   });
+  refreshWeConfigButton.addEventListener('click', () => void refreshWallpaperEngineConfig());
   weRandomButton.addEventListener('click', () => void playRandomWallpaperEngineEntry({ reason: 'manual' }));
   $('we-probe').addEventListener('click', () => void probeDirectFileAccess());
   clearWePlayedButton.addEventListener('click', () => void clearPlayedWallpaperEngineEntries());
@@ -535,6 +540,8 @@ function updateWeStatus(): void {
   const removedCount = playlistEntries.length - active.length;
   weRandomButton.disabled = active.length === 0;
   clearWePlayedButton.disabled = played.length === 0;
+  // 记住过配置文件（句柄或路径）才有东西可刷新。
+  refreshWeConfigButton.disabled = !(configFileHandle || settings.wallpaperConfigPath || settings.wallpaperConfigName);
   restoreWeRemovedButton.hidden = removedCount === 0;
   restoreWeRemovedButton.disabled = removedCount === 0;
   restoreWeRemovedButton.textContent = `恢复已移除（${removedCount}）`;
@@ -544,7 +551,10 @@ function updateWeStatus(): void {
   }
   if (playlistEntries.length === 0) {
     weStatus.hidden = false;
-    weStatus.textContent = '尚未读取 Wallpaper Engine 配置。点击“选择 WE 配置”读取 config.json 中的 playlist.items 地址。';
+    const saved = settings.wallpaperConfigPath || settings.wallpaperConfigName;
+    weStatus.textContent = saved
+      ? `尚未读取背景列表。上次的配置：${saved}，可点击“刷新壁纸列表”重新读取，或“选择 WE 配置”换一个文件。`
+      : '尚未读取 Wallpaper Engine 配置。点击“选择 WE 配置”读取 config.json 中的 playlist.items 地址。';
     return;
   }
   if (active.length === 0) {
@@ -709,10 +719,12 @@ function renderWallpaperEngineList(): void {
   applyMediaListCollapsed();
 }
 
-/** 该场景包是否声明了可编辑的用户选项（WE 保留项不算）。 */
+/**
+ * 该场景包是否可配置。所有场景包都提供内置的“显示位置”滑块，
+ * 声明了用户选项的还会额外列出这些选项。
+ */
 function hasEditableProperties(entry: WallpaperEngineEntry): boolean {
-  if (entry.kind !== 'scene' || !entry.userProperties?.length) return false;
-  return entry.userProperties.some((property) => !isReservedProperty(property));
+  return entry.kind === 'scene';
 }
 
 function createPropertiesButton(entry: WallpaperEngineEntry): HTMLButtonElement {
@@ -906,24 +918,30 @@ async function showWallpaperEngineProperties(entryId: string): Promise<void> {
   wePropertiesTitle.textContent = wallpaperEngineDisplayName(entry);
   wePropertiesList.replaceChildren();
   const properties = (entry.userProperties ?? []).filter((property) => !isReservedProperty(property));
+  wePropertiesNote.hidden = false;
+  // 内置的“显示位置”对所有场景包可用：内容比屏幕大时用它修正取景。
+  for (const row of renderViewOffsetRows(entry)) wePropertiesList.append(row);
   if (!properties.length) {
     const canRead = IS_EXTENSION_CONTEXT && directReadState !== 'failed' && fileSchemeAllowed !== false;
     const known = entry.propertiesCheckedAt !== undefined;
     if (canRead && known) {
-      notify(`${wallpaperEngineDisplayName(entry)} 没有可选配置（project.json 未声明用户选项）。`);
+      wePropertiesNote.textContent = '该场景包没有声明额外选项，可调整“水平位置 / 垂直位置”来修正画面取景。';
+      if (!wePropertiesDialog.open) wePropertiesDialog.showModal();
+      $('we-properties-reset').hidden = !entry.viewOffsetX && !entry.viewOffsetY;
       return;
     }
     wePropertiesNote.hidden = true;
     wePropertiesList.append(createEmptyPropertiesHint());
     if (!wePropertiesDialog.open) wePropertiesDialog.showModal();
+    $('we-properties-reset').hidden = !entry.viewOffsetX && !entry.viewOffsetY;
     return;
   }
-  wePropertiesNote.hidden = false;
   {
     const customized = properties.filter((property) => entry.propertyOverrides?.[property.name] !== undefined).length;
+    const position = entry.viewOffsetX || entry.viewOffsetY ? '，画面位置已调整' : '';
     wePropertiesNote.textContent = customized
-      ? `${properties.length} 项可选配置，其中 ${customized} 项已由你调整（蓝色标出）。改动会立即生效并保存在本机，不修改壁纸文件。`
-      : `${properties.length} 项可选配置，调整后立即生效并保存在本机，不修改壁纸文件。`;
+      ? `${properties.length} 项壁纸选项，其中 ${customized} 项已由你调整（蓝色标出）${position}。改动会立即生效并保存在本机，不修改壁纸文件。`
+      : `${properties.length} 项壁纸选项，另有水平和垂直位置滑块${position}。调整后立即生效并保存在本机，不修改壁纸文件。`;
     for (const property of properties) {
       const row = renderPropertyRow(entry, property);
       propertyDialogRows.push({ row, property });
@@ -932,7 +950,103 @@ async function showWallpaperEngineProperties(entryId: string): Promise<void> {
     applyPropertyConditions(entry);
   }
   if (!wePropertiesDialog.open) wePropertiesDialog.showModal();
-  $('we-properties-reset').hidden = !entry.propertyOverrides || !Object.keys(entry.propertyOverrides).length;
+  $('we-properties-reset').hidden = (!entry.propertyOverrides || !Object.keys(entry.propertyOverrides).length)
+    && !entry.viewOffsetX && !entry.viewOffsetY;
+}
+
+/**
+ * 内置“显示位置”滑块（X 水平 / Y 垂直）：-100 显示左（上）侧，0 居中，100 显示右（下）侧。
+ * Wallpaper Engine 客户端只能调 X，这里两轴都给。
+ */
+function renderViewOffsetRows(entry: WallpaperEngineEntry): HTMLElement[] {
+  return [
+    createViewOffsetRow(entry, 'x', '水平位置', entry.viewOffsetX ?? 0),
+    createViewOffsetRow(entry, 'y', '垂直位置', entry.viewOffsetY ?? 0),
+  ];
+}
+
+function createViewOffsetRow(
+  entry: WallpaperEngineEntry,
+  axis: 'x' | 'y',
+  labelText: string,
+  value: number,
+): HTMLElement {
+  const row = document.createElement('label');
+  row.className = 'property-row';
+  const name = document.createElement('div');
+  name.className = 'property-name';
+  const label = document.createElement('strong');
+  label.textContent = labelText;
+  const meta = document.createElement('small');
+  meta.textContent = '画面比屏幕大时用来修正取景';
+  name.append(label, meta);
+  const cell = document.createElement('div');
+  cell.className = 'property-value';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'property-slider';
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = '-100';
+  input.max = '100';
+  input.step = '1';
+  input.value = String(value);
+  input.dataset.viewOffset = `${entry.id}:${axis}`;
+  input.setAttribute('aria-label', `${labelText} ${viewOffsetLabel(axis, value)}`);
+  const output = document.createElement('span');
+  output.textContent = viewOffsetLabel(axis, value);
+  input.addEventListener('input', () => {
+    output.textContent = viewOffsetLabel(axis, Number(input.value));
+    input.setAttribute('aria-label', `${labelText} ${output.textContent}`);
+  });
+  input.addEventListener('change', () => {
+    void applyViewOffsetChange(entry.id, axis, Number(input.value));
+  });
+  wrapper.append(input, output);
+  cell.append(wrapper);
+  row.classList.toggle('is-custom', value !== 0);
+  row.append(name, cell);
+  return row;
+}
+
+function viewOffsetLabel(axis: 'x' | 'y', value: number): string {
+  if (!value) return '居中';
+  if (axis === 'x') return value > 0 ? `右 ${value}` : `左 ${Math.abs(value)}`;
+  return value > 0 ? `下 ${value}` : `上 ${Math.abs(value)}`;
+}
+
+async function applyViewOffsetChange(entryId: string, axis: 'x' | 'y', value: number): Promise<void> {
+  const index = playlistEntries.findIndex((item) => item.id === entryId);
+  if (index < 0) return;
+  const offset = Math.max(-100, Math.min(100, Math.round(value)));
+  const updated: WallpaperEngineEntry = axis === 'x'
+    ? { ...playlistEntries[index], viewOffsetX: offset === 0 ? undefined : offset }
+    : { ...playlistEntries[index], viewOffsetY: offset === 0 ? undefined : offset };
+  playlistEntries[index] = updated;
+  const row = wePropertiesList.querySelector<HTMLElement>(
+    `[data-view-offset="${CSS.escape(`${entryId}:${axis}`)}"]`,
+  )?.closest('.property-row');
+  row?.classList.toggle('is-custom', offset !== 0);
+  $('we-properties-reset').hidden = (!updated.propertyOverrides || !Object.keys(updated.propertyOverrides).length)
+    && !updated.viewOffsetX && !updated.viewOffsetY;
+  if (settings.currentWallpaperEngineId === updated.id) applySceneView(updated);
+  try {
+    await savePlaylistEntry(updated);
+  } catch (error) {
+    notify(`保存画面位置失败：${errorMessage(error)}`);
+  }
+}
+
+/** 把画面位置（X / Y）推给正在播放的场景。 */
+function applySceneView(entry: WallpaperEngineEntry): void {
+  const frame = sceneRendererFrame;
+  const token = sceneRendererToken;
+  if (!frame?.contentWindow || !token) return;
+  frame.contentWindow.postMessage({
+    type: 'view',
+    token,
+    x: entry.viewOffsetX ?? 0,
+    y: entry.viewOffsetY ?? 0,
+  }, '*');
 }
 
 /** WE 的保留项（配色主题、音量等）不在壁纸内容里，不展示。 */
@@ -1217,10 +1331,16 @@ async function resetWallpaperEngineProperties(): Promise<void> {
   if (!entryId) return;
   const index = playlistEntries.findIndex((item) => item.id === entryId);
   if (index < 0) return;
-  const updated: WallpaperEngineEntry = { ...playlistEntries[index], propertyOverrides: undefined };
+  const updated: WallpaperEngineEntry = {
+    ...playlistEntries[index],
+    propertyOverrides: undefined,
+    viewOffsetX: undefined,
+    viewOffsetY: undefined,
+  };
   playlistEntries[index] = updated;
   propertyDialogRows = [];
   wePropertiesList.replaceChildren();
+  for (const row of renderViewOffsetRows(updated)) wePropertiesList.append(row);
   const properties = (updated.userProperties ?? []).filter((property) => !isReservedProperty(property));
   for (const property of properties) {
     const row = renderPropertyRow(updated, property);
@@ -1228,9 +1348,14 @@ async function resetWallpaperEngineProperties(): Promise<void> {
     wePropertiesList.append(row);
   }
   applyPropertyConditions(updated);
-  wePropertiesNote.textContent = `${properties.length} 项可选配置，已恢复为壁纸与配置文件的默认值。`;
+  wePropertiesNote.textContent = properties.length
+    ? `${properties.length} 项可选配置，已恢复为壁纸与配置文件的默认值。`
+    : '已恢复为默认取景。';
   $('we-properties-reset').hidden = true;
-  if (settings.currentWallpaperEngineId === updated.id) applySceneProperties(updated);
+  if (settings.currentWallpaperEngineId === updated.id) {
+    applySceneProperties(updated);
+    applySceneView(updated);
+  }
   try {
     await savePlaylistEntry(updated);
     notify('已恢复该壁纸的默认配置。');
@@ -1708,7 +1833,10 @@ async function applyWallpaperEnginePreview(entryId: string, preview: Blob, fromP
   updateWeStatus();
 }
 
-async function importWallpaperEngineConfig(file: File): Promise<void> {
+async function importWallpaperEngineConfig(
+  file: File,
+  options: { handle?: FileSystemFileHandle; refresh?: boolean } = {},
+): Promise<void> {
   if (file.size > 20 * 1024 * 1024) {
     notify('Wallpaper Engine 配置文件超过 20 MB 限制。');
     return;
@@ -1720,14 +1848,27 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
       notify('配置中没有找到受支持的壁纸路径（MP4、WebM、JPEG、PNG、WebP 或 PKGV .pkg）。');
       return;
     }
+    if (options.handle) {
+      configFileHandle = options.handle;
+      // 句柄无法 JSON 序列化，只能存 IndexedDB；同时把可比对的路径写进设置。
+      await saveConfigFileHandle(options.handle).catch((error: unknown) =>
+        console.warn(`保存配置文件句柄失败：${errorMessage(error)}`));
+    }
+    const configPath = configPathFromInstallDirectory(parsed.installDirectory);
     const entries = parsed.entries.map((entry) => {
       const overrides = propertyOverridesFor(parsed.propertyValues, entry.path, entry.monitor);
       return overrides ? { ...entry, configPropertyValues: overrides } : entry;
     });
     playlistEntries = await replacePlaylistEntries(entries);
     settings.wallpaperConfigName = file.name;
+    settings.wallpaperConfigPath = configPath ?? settings.wallpaperConfigPath;
     settings.backgroundSource = 'wallpaper-engine';
-    if (!playlistEntries.some((entry) => entry.id === settings.currentWallpaperEngineId && !entry.removed)) {
+    // 刷新时保持当前正在播放的背景；只有该条目已不在配置里才换成随机一张。
+    const currentEntry = playlistEntries.find(
+      (entry) => entry.id === settings.currentWallpaperEngineId && !entry.removed,
+    );
+    const keepPlaying = Boolean(options.refresh && currentEntry && currentWeAsset);
+    if (!currentEntry) {
       settings.currentWallpaperEngineId = null;
       currentWeAsset = undefined;
     }
@@ -1743,12 +1884,103 @@ async function importWallpaperEngineConfig(file: File): Promise<void> {
       : '';
     const removedCount = playlistEntries.filter((entry) => entry.removed).length;
     const removed = removedCount ? `，${removedCount} 项保持已移除` : '';
-    notify(`已读取${user}${entries.length} 个背景${skipped}${ignored}${removed}。`);
-    void enterWallpaperEngineMode();
-    // 导入后自动检查一次文件是否存在，把缺失项从随机播放中排除。
+    const prefix = options.refresh ? '已刷新配置' : '已读取';
+    notify(`${prefix}${user}${entries.length} 个背景${skipped}${ignored}${removed}。`);
+    if (keepPlaying) {
+      renderWallpaperName();
+    } else {
+      void enterWallpaperEngineMode();
+    }
+    // 导入/刷新后自动检查一次文件是否存在，把缺失项从随机播放中排除。
     void checkMissingWallpaperEngineEntries();
   } catch (error) {
     notify(`读取 Wallpaper Engine 配置失败：${errorMessage(error)}`);
+  }
+}
+
+/** 选择 WE 配置：优先用文件句柄（下次默认打开上次目录，且刷新可无弹窗重读）。 */
+async function pickWallpaperEngineConfig(): Promise<void> {
+  if (typeof window.showOpenFilePicker !== 'function') {
+    // 不支持 File System Access 的环境退回普通文件选择器（无法记住目录）。
+    weConfigInput.click();
+    return;
+  }
+  const options: OpenFilePickerOptions = {
+    multiple: false,
+    suggestedName: 'config.json',
+    types: [{ description: 'Wallpaper Engine 配置', accept: { 'application/json': ['.json'] } }],
+  };
+  try {
+    let handles: FileSystemFileHandle[];
+    try {
+      handles = await window.showOpenFilePicker(
+        configFileHandle ? { ...options, startIn: configFileHandle } : options,
+      );
+    } catch (error) {
+      // 记住的句柄失效（文件被移动/删除）时，退回不带起始位置再问一次。
+      if (!configFileHandle || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+      console.warn(`上次的配置位置已失效：${errorMessage(error)}`);
+      handles = await window.showOpenFilePicker(options);
+    }
+    const handle = handles[0];
+    if (!handle) return;
+    await importWallpaperEngineConfig(await handle.getFile(), { handle });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
+    notify(`打开配置文件失败：${errorMessage(error)}`);
+  }
+}
+
+/**
+ * 刷新配置：用上次记住的句柄直接重读同一个文件（不再弹对话框）；
+ * 句柄不可用时退回按记录的绝对路径直读（需要“允许访问文件网址”）。
+ */
+async function refreshWallpaperEngineConfig(): Promise<void> {
+  const handle = configFileHandle ?? (configFileHandle = await loadConfigFileHandle().catch(() => undefined));
+  if (handle) {
+    try {
+      if (!(await ensureConfigHandlePermission(handle))) {
+        notify('已失去配置文件的读取权限，请点“选择 WE 配置”重新选择一次。');
+        return;
+      }
+      await importWallpaperEngineConfig(await handle.getFile(), { handle, refresh: true });
+      return;
+    } catch (error) {
+      console.warn(`读取已记住的配置文件失败：${errorMessage(error)}`);
+    }
+  }
+  const path = settings.wallpaperConfigPath;
+  if (path) {
+    if (!IS_EXTENSION_CONTEXT) {
+      notify('开发预览页面读不到本地文件；请先在已加载的扩展里选择一次配置。');
+      return;
+    }
+    try {
+      const file = await readLocalFileViaProtocol(path);
+      await importWallpaperEngineConfig(file, { refresh: true });
+      return;
+    } catch (error) {
+      notify(`刷新失败：${errorMessage(error)}。请在 chrome://extensions 打开“允许访问文件网址”，或点“选择 WE 配置”重新选择。`);
+      return;
+    }
+  }
+  notify('还没有记录配置文件，请先点“选择 WE 配置”。');
+}
+
+/** 句柄可能因权限过期需要重新授权；没有该 API 时交给 getFile() 抛错。 */
+async function ensureConfigHandlePermission(handle: FileSystemFileHandle): Promise<boolean> {
+  const target = handle as FileSystemFileHandle & FileSystemHandlePermissionMixin;
+  try {
+    if (target.queryPermission) {
+      const state = await target.queryPermission({ mode: 'read' });
+      if (state === 'granted') return true;
+    }
+    if (target.requestPermission) {
+      return (await target.requestPermission({ mode: 'read' })) === 'granted';
+    }
+    return true;
+  } catch {
+    return true;
   }
 }
 
@@ -2296,6 +2528,8 @@ async function sendScenePackage(): Promise<void> {
       title: current.name,
       project: entry?.projectInfo,
       properties: entry ? effectiveProperties(entry) : {},
+      viewX: entry?.viewOffsetX ?? 0,
+      viewY: entry?.viewOffsetY ?? 0,
     }, '*', [bytes]);
   } catch (error) {
     notify(`读取场景包失败：${errorMessage(error)}`);
@@ -2456,8 +2690,10 @@ async function handleMediaAction(event: Event): Promise<void> {
     // × 把该条目移出背景列表与随机池；重新导入配置后仍保持移除，可用“恢复已移除”找回。
     await removePlaylistEntry(entry);
     entry.removed = true;
-    const remaining = playlistEntries.filter((item) => !item.removed).length;
-    if (settings.currentWallpaperEngineId === entry.id) {
+    const remainingEntries = playlistEntries.filter((item) => !item.removed);
+    const remaining = remainingEntries.length;
+    const wasCurrent = settings.currentWallpaperEngineId === entry.id;
+    if (wasCurrent) {
       settings.currentWallpaperEngineId = null;
       settings.previousWallpaperEngineId = null;
       currentWeAsset = undefined;
@@ -2465,6 +2701,12 @@ async function handleMediaAction(event: Event): Promise<void> {
     }
     await persist();
     renderAll();
+    // 移除的正是当前背景时立刻自动换一张，不让页面停在无背景状态。
+    if (wasCurrent && remaining > 0) {
+      notify(`已从背景列表移除：${wallpaperEngineDisplayName(entry)}，正在自动切换背景（剩余 ${remaining} 项）。`);
+      await playRandomWallpaperEngineEntry({ reason: 'recover' });
+      return;
+    }
     notify(`已从背景列表移除：${wallpaperEngineDisplayName(entry)}（剩余 ${remaining} 项，可用“恢复已移除”找回）`);
     return;
   }
@@ -2812,6 +3054,9 @@ function validateBackup(value: unknown): BackupData {
       previousWallpaperEngineId: null,
       wallpaperConfigName: typeof record.settings.wallpaperConfigName === 'string'
         ? record.settings.wallpaperConfigName.slice(0, 200)
+        : '',
+      wallpaperConfigPath: typeof record.settings.wallpaperConfigPath === 'string'
+        ? record.settings.wallpaperConfigPath.slice(0, 500)
         : '',
       iconSource,
       searchEngine,

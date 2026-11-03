@@ -38,6 +38,7 @@ function normalizeSettings(value: unknown): AppSettings {
     currentWallpaperEngineId: typeof candidate.currentWallpaperEngineId === 'string' ? candidate.currentWallpaperEngineId : null,
     previousWallpaperEngineId: typeof candidate.previousWallpaperEngineId === 'string' ? candidate.previousWallpaperEngineId : null,
     wallpaperConfigName: typeof candidate.wallpaperConfigName === 'string' ? candidate.wallpaperConfigName.slice(0, 200) : '',
+    wallpaperConfigPath: typeof candidate.wallpaperConfigPath === 'string' ? candidate.wallpaperConfigPath.slice(0, 500) : '',
     iconSource: candidate.iconSource === 'international' ? 'international' : 'domestic',
     searchEngine: SEARCH_ENGINES.some((engine) => engine.id === candidate.searchEngine)
       ? candidate.searchEngine!

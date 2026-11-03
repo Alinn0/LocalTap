@@ -8,6 +8,8 @@ export interface ParsedWallpaperConfig {
   ignoredUsers: string[];
   /** `wproperties`：路径 → 显示器 → 该壁纸的用户选项当前值。 */
   propertyValues: WallpaperPropertyOverrides;
+  /** 配置里的 `?installdirectory`，用于推导配置文件自身所在的绝对路径。 */
+  installDirectory?: string;
   skipped: number;
   skippedWeb: number;
   skippedLooseScene: number;
@@ -76,11 +78,34 @@ export function parseWallpaperEngineConfig(raw: unknown): ParsedWallpaperConfig 
     user: selected.name,
     ignoredUsers: selected.ignored,
     propertyValues: readPropertyValues(selected.node),
+    ...(readInstallDirectory(raw) ? { installDirectory: readInstallDirectory(raw) } : {}),
     skipped: skippedPaths.size + skippedWeb,
     skippedWeb,
     skippedLooseScene,
     skippedOther: skippedPaths.size,
   };
+}
+
+/**
+ * 读取配置里的 `?installdirectory`（Wallpaper Engine 安装目录）。
+ * 配置文件本身就在该目录下，因此可用它推导出 `config.json` 的绝对路径。
+ */
+export function readInstallDirectory(raw: unknown): string | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  for (const [key, value] of Object.entries(record)) {
+    if (key.toLowerCase() !== '?installdirectory') continue;
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    if (trimmed) return trimmed.slice(0, 400);
+  }
+  return undefined;
+}
+
+/** 由安装目录推导配置文件路径；没有安装目录信息时返回 undefined。 */
+export function configPathFromInstallDirectory(installDirectory: string | undefined): string | undefined {
+  if (!installDirectory) return undefined;
+  return `${installDirectory.replace(/\\/g, '/').replace(/\/+$/, '')}/config.json`;
 }
 
 /** 读取当前用户节点里的 `wproperties`（壁纸用户选项的当前值）。 */

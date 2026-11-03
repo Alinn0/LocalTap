@@ -3,9 +3,10 @@ import { MediaAsset, MediaKind, WallpaperEngineEntry } from './models';
 const DB_NAME = 'localtab-media';
 const STORE_NAME = 'assets';
 const PLAYLIST_STORE_NAME = 'playlist';
-/** 旧版本用于保存目录句柄；保留仓库名以便打开已有数据库，但不再写入。 */
+/** 旧版本用于保存目录句柄；现在用来保存用户选择的 WE 配置文件句柄。 */
 const HANDLE_STORE_NAME = 'handles';
-const DB_VERSION = 2;
+const CONFIG_HANDLE_KEY = 'we-config';
+const DB_VERSION = 3;
 const ALLOWED_MEDIA = new Set(['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm']);
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024;
 const PREVIEW_MAX_WIDTH = 320;
@@ -91,6 +92,32 @@ export async function listPlaylistEntries(): Promise<WallpaperEngineEntry[]> {
   return getAllFromStore<WallpaperEngineEntry>(PLAYLIST_STORE_NAME);
 }
 
+/**
+ * 记住用户选择的 WE 配置文件句柄（FileSystemFileHandle 无法 JSON 序列化，
+ * 只能存 IndexedDB）。下次打开文件选择器时用它的所在目录作为起始位置，
+ * 「刷新」也能直接重读同一个文件而无需再弹对话框。
+ */
+export async function saveConfigFileHandle(handle: FileSystemFileHandle): Promise<void> {
+  await requestInStore(HANDLE_STORE_NAME, 'readwrite', (store) => store.put(handle, CONFIG_HANDLE_KEY));
+}
+
+export async function loadConfigFileHandle(): Promise<FileSystemFileHandle | undefined> {
+  if (!('indexedDB' in globalThis)) return undefined;
+  const value = await requestInStore<unknown>(HANDLE_STORE_NAME, 'readonly', (store) => store.get(CONFIG_HANDLE_KEY));
+  return isFileHandle(value) ? value : undefined;
+}
+
+export async function clearConfigFileHandle(): Promise<void> {
+  await requestInStore(HANDLE_STORE_NAME, 'readwrite', (store) => store.delete(CONFIG_HANDLE_KEY));
+}
+
+function isFileHandle(value: unknown): value is FileSystemFileHandle {
+  return Boolean(value)
+    && typeof value === 'object'
+    && (value as FileSystemFileHandle).kind === 'file'
+    && typeof (value as FileSystemFileHandle).getFile === 'function';
+}
+
 export async function savePlaylistEntry(entry: WallpaperEngineEntry): Promise<void> {
   await requestInStore(PLAYLIST_STORE_NAME, 'readwrite', (store) => store.put(entry));
 }
@@ -131,6 +158,8 @@ export async function replacePlaylistEntries(entries: WallpaperEngineEntry[]): P
         // 配置里的当前值每次导入刷新；用户在本扩展里的调整始终保留。
         configPropertyValues: entry.configPropertyValues ?? old.configPropertyValues,
         propertyOverrides: old.propertyOverrides,
+        viewOffsetX: entry.viewOffsetX ?? old.viewOffsetX,
+        viewOffsetY: entry.viewOffsetY ?? old.viewOffsetY,
         removed: old.removed,
       }
       : entry;

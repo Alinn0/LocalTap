@@ -3,8 +3,9 @@ import type { PropertyValue, SceneInstance } from 'webwallgl';
 type PointerState = { u: number; v: number; buttons: number; mods: number };
 
 type RendererMessage =
-  | { type: 'load'; token: string; bytes: ArrayBuffer; key: string; title: string; project?: unknown; properties?: Record<string, PropertyValue> }
+  | { type: 'load'; token: string; bytes: ArrayBuffer; key: string; title: string; project?: unknown; properties?: Record<string, PropertyValue>; viewX?: number; viewY?: number }
   | { type: 'properties'; token: string; properties: Record<string, PropertyValue> }
+  | { type: 'view'; token: string; x: number; y: number }
   | { type: 'pause' | 'resume'; token: string }
   | ({ type: 'pointer'; token: string } & PointerState)
   | { type: 'pointer-leave'; token: string };
@@ -19,6 +20,9 @@ let pendingPlaybackState: { token: string; paused: boolean } | undefined;
 let lastPointer: PointerState | undefined;
 let scene: SceneInstance | undefined;
 let currentProperties: Record<string, PropertyValue> = {};
+/** 画面位置：-100…100，0 为居中。内容比视口大时用它微调取景（X 水平 / Y 垂直）。 */
+let currentViewX = 0;
+let currentViewY = 0;
 let refreshRatePromise: Promise<number> | undefined;
 const rendererApi = loadRenderer();
 
@@ -39,6 +43,12 @@ window.addEventListener('message', (event: MessageEvent<RendererMessage>) => {
     if (message.token !== currentToken) return;
     currentProperties = { ...message.properties };
     scene?.setProperties(currentProperties);
+    return;
+  }
+  if (message.type === 'view') {
+    currentViewX = clampViewOffset(message.x);
+    currentViewY = clampViewOffset(message.y);
+    applyView();
     return;
   }
   if (message.type === 'pointer') {
@@ -63,6 +73,8 @@ async function loadScene(message: Extract<RendererMessage, { type: 'load' }>): P
   const loadGeneration = ++generation;
   currentToken = message.token;
   currentProperties = { ...(message.properties ?? {}) };
+  currentViewX = clampViewOffset(message.viewX);
+  currentViewY = clampViewOffset(message.viewY);
   paused = pendingPlaybackState?.token === message.token ? pendingPlaybackState.paused : false;
   pendingPlaybackState = undefined;
   initialFrameCaptured = false;
@@ -91,6 +103,7 @@ async function loadScene(message: Extract<RendererMessage, { type: 'load' }>): P
       return;
     }
     scene = instance;
+    applyView();
     if (lastPointer) instance.pushPointer(lastPointer.u, lastPointer.v, lastPointer.buttons, lastPointer.mods);
     parent.postMessage({ type: 'scene-ready', token: currentToken }, '*');
     void sendPreview(instance, currentToken);
@@ -143,6 +156,34 @@ function detectRefreshRate(): Promise<number> {
   });
   return refreshRatePromise;
 }
+
+/**
+ * 画面位置调整：把引擎画布按固定倍率放大，再在放大产生的余量里平移，
+ * 这样平移时不会露出空白边缘。X / Y 各自独立，均可调（WE 客户端只能调 X）。
+ */
+const VIEW_OVERSCAN = 0.24;
+
+function clampViewOffset(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(-100, Math.min(100, Math.round(value)));
+}
+
+function applyView(): void {
+  const canvas = scene?.canvas;
+  if (!canvas) return;
+  const overscan = VIEW_OVERSCAN * 100;
+  const size = `${Math.round((1 + VIEW_OVERSCAN) * 100)}%`;
+  // -100 → 0%（贴左/上），0 → 一半余量（居中），100 → 全部余量（贴右/下）。
+  const left = (overscan * (currentViewX + 100)) / 200;
+  const top = (overscan * (currentViewY + 100)) / 200;
+  canvas.style.width = size;
+  canvas.style.height = size;
+  canvas.style.left = `-${left.toFixed(2)}%`;
+  canvas.style.top = `-${top.toFixed(2)}%`;
+}
+
+/** 视图尺寸变化后引擎会重设画布属性，这里补回位置样式。 */
+window.addEventListener('resize', () => applyView());
 
 async function sendPreview(instance: SceneInstance, token: string): Promise<void> {
   try {
