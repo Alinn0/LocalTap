@@ -1,6 +1,6 @@
 export type PlaybackMode = 'random' | 'order' | 'fixed';
 export type MediaKind = 'image' | 'video' | 'scene' | 'icon';
-export type IconSource = 'international' | 'domestic';
+export type IconSource = 'auto';
 export type SearchEngineId = 'baidu' | 'google' | 'bing' | 'sogou' | 'so360' | 'duckduckgo' | 'yandex';
 export type BackgroundSource = 'library' | 'wallpaper-engine';
 
@@ -153,7 +153,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   previousWallpaperEngineId: null,
   wallpaperConfigName: '',
   wallpaperConfigPath: '',
-  iconSource: 'domestic',
+  iconSource: 'auto',
   searchEngine: 'baidu',
   controlsCollapsed: false,
   mediaListCollapsed: false,

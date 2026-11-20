@@ -1,6 +1,6 @@
-import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, IconSource, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, WallpaperPropertyValue, WallpaperUserProperty, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
+import { AppSettings, BackgroundSource, DEFAULT_SETTINGS, MediaAsset, PlaybackMode, SEARCH_ENGINES, SearchEngineId, Shortcut, WallpaperEngineEntry, WallpaperPropertyValue, WallpaperUserProperty, buildSearchUrl, isValidShortcutUrl, searchEngineLabel } from './models';
 import { captureImagePreview, captureVideoPreview, clearPlaylistPlayed, deleteAsset, deleteAssets, formatBytes, inspectMedia, listAssets, listPlaylistEntries, loadConfigFileHandle, removePlaylistEntry, replacePlaylistEntries, restoreRemovedPlaylistEntries, saveAsset, saveConfigFileHandle, savePlaylistEntry } from './media-db';
-import { ICON_SOURCES, clearIconCache, fetchAndCacheIcon, getCachedIcon, hasIconPermission, iconCacheId, normalizedDomain, purgeLegacyUploadedIcons, requestIconPermission } from './icon-resolver';
+import { fetchAndCacheIcon, getCachedIcon, iconCacheId, normalizedDomain, requestIconPermission } from './icon-resolver';
 import { loadSettings, saveSettings } from './storage';
 import { configPathFromInstallDirectory, mediaPathForEntry, mimeForPlaylistKind, parseWallpaperEngineConfig, propertyOverridesFor, readLocalFileViaProtocol, readProjectMetadata, readProjectPreview, toFileUrl } from './wallpaper-engine';
 import './style.css';
@@ -128,7 +128,7 @@ async function start(): Promise<void> {
     media = (await listAssets()).filter((asset) => asset.kind !== 'icon');
     playlistEntries = await listPlaylistEntries();
     configFileHandle = await loadConfigFileHandle().catch(() => undefined);
-    await purgeLegacyUploadedIcons();
+
     // 先确认“允许访问文件网址”开关与小文件可读性，避免首帧渲染前误显示提示。
     if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length && IS_EXTENSION_CONTEXT) {
       await refreshFileSchemeState();
@@ -138,6 +138,7 @@ async function start(): Promise<void> {
     setupEvents();
     applySettingsToControls();
     renderAll();
+    void syncShortcutIcons().catch(error => console.warn(errorMessage(error)));
     if (settings.backgroundSource === 'wallpaper-engine' && playlistEntries.length > 0 && !currentWeAsset) {
       notify(localFileHint());
     }
@@ -378,11 +379,7 @@ function setupEvents(): void {
     void persist();
   });
   $('add-shortcut').addEventListener('click', () => openShortcutEditor());
-  $('icon-source').addEventListener('change', (event) => {
-    const select = event.currentTarget as HTMLSelectElement;
-    settings.iconSource = select.value === 'international' ? 'international' : 'domestic';
-    void changeIconSource();
-  });
+
   $('search-engine').addEventListener('change', (event) => {
     const select = event.currentTarget as HTMLSelectElement;
     settings.searchEngine = select.value as SearchEngineId;
@@ -390,9 +387,13 @@ function setupEvents(): void {
     applySearchPlaceholder();
     notify(`搜索将使用：${searchEngineLabel(settings.searchEngine)}`);
   });
-  $('refresh-icons').addEventListener('click', () => {
-    void refreshIcons();
+  $('authorize-icons').addEventListener('click', () => {
+    void requestIconPermission().then(async granted => {
+      if (!granted) { notify('未授权网站解析，继续使用缓存与浏览器图标。'); return; }
+      reportIconSync(await syncShortcutIcons());
+    }).catch(error => notify(errorMessage(error)));
   });
+  $('refresh-icons').addEventListener('click', () => void refreshIcons());
   shortcutManager.addEventListener('click', (event) => void handleShortcutManagerAction(event));
   shortcutManager.addEventListener('dragstart', (event) => {
     const row = (event.target as HTMLElement).closest<HTMLElement>('[data-shortcut-id]');
@@ -448,7 +449,6 @@ function applySettingsToControls(): void {
     }
   }
   searchEngineSelect.value = settings.searchEngine;
-  ($('icon-source') as HTMLSelectElement).value = settings.iconSource;
   ($('playback-mode') as HTMLSelectElement).value = settings.playbackMode;
   ($('switch-interval') as HTMLInputElement).value = String(settings.switchIntervalMinutes);
   backgroundSourceSelect.value = settings.backgroundSource;
@@ -997,6 +997,7 @@ function createViewOffsetRow(
   input.addEventListener('input', () => {
     output.textContent = viewOffsetLabel(axis, Number(input.value));
     input.setAttribute('aria-label', `${labelText} ${output.textContent}`);
+    void applyViewOffsetChange(entry.id, axis, Number(input.value), false);
   });
   input.addEventListener('change', () => {
     void applyViewOffsetChange(entry.id, axis, Number(input.value));
@@ -1014,7 +1015,7 @@ function viewOffsetLabel(axis: 'x' | 'y', value: number): string {
   return value > 0 ? `下 ${value}` : `上 ${Math.abs(value)}`;
 }
 
-async function applyViewOffsetChange(entryId: string, axis: 'x' | 'y', value: number): Promise<void> {
+async function applyViewOffsetChange(entryId: string, axis: 'x' | 'y', value: number, save = true): Promise<void> {
   const index = playlistEntries.findIndex((item) => item.id === entryId);
   if (index < 0) return;
   const offset = Math.max(-100, Math.min(100, Math.round(value)));
@@ -1029,6 +1030,7 @@ async function applyViewOffsetChange(entryId: string, axis: 'x' | 'y', value: nu
   $('we-properties-reset').hidden = (!updated.propertyOverrides || !Object.keys(updated.propertyOverrides).length)
     && !updated.viewOffsetX && !updated.viewOffsetY;
   if (settings.currentWallpaperEngineId === updated.id) applySceneView(updated);
+  if (!save) return;
   try {
     await savePlaylistEntry(updated);
   } catch (error) {
@@ -2187,13 +2189,10 @@ async function applyShortcutIcon(icon: HTMLSpanElement, url: string, fallback: s
     image.addEventListener('error', () => {
       URL.revokeObjectURL(objectUrl);
       icon.textContent = fallback;
-      console.warn(`本地图标缓存无法解码：${domain}`);
-      notify(`${domain} 的缓存图标无法解码，已回退为首字母。`);
     }, { once: true });
     image.src = objectUrl;
   } catch (error) {
     console.error(`读取 ${domain} 的本地图标缓存失败`, error);
-    notify(`读取 ${domain} 的图标缓存失败：${errorMessage(error)}`);
   }
 }
 
@@ -2203,80 +2202,47 @@ interface IconSyncReport {
   permissionDenied: boolean;
 }
 
-async function syncShortcutIcons(): Promise<IconSyncReport> {
-  const targets = new Map<string, string>();
-  for (const shortcut of settings.shortcuts) {
-    const domain = normalizedDomain(shortcut.url);
-    if (domain && !targets.has(domain)) targets.set(domain, shortcut.url);
-  }
-  if (!targets.size) return { updated: 0, failures: [], permissionDenied: false };
-  const source = settings.iconSource;
-  if (!(await hasIconPermission(source))) return { updated: 0, failures: [], permissionDenied: true };
+let iconSyncQueue: Promise<unknown> = Promise.resolve();
+function syncShortcutIcons(): Promise<IconSyncReport> {
+  const task = iconSyncQueue.then(() => syncShortcutIconsNow());
+  iconSyncQueue = task.catch(() => undefined);
+  return task;
+}
+async function syncShortcutIconsNow(): Promise<IconSyncReport> {
+  const source = settings.iconSource, targets = settings.shortcuts.map(item => ({ ...item }));
   let updated = 0;
   const failures: IconSyncReport['failures'] = [];
-  for (const [domain] of targets) {
-    try {
-      if (await getCachedIcon(source, domain)) continue;
-      await fetchAndCacheIcon(source, domain);
-      updated += 1;
-    } catch (error) {
-      failures.push({ domain, message: errorMessage(error) });
+  {
+    const seen = new Set<string>();
+    for (const shortcut of targets) {
+      const page = normalizedDomain(shortcut.url);
+      if (!page || seen.has(iconCacheId(source, page))) continue;
+      seen.add(iconCacheId(source, page));
+      try {
+        if (await getCachedIcon(source, page)) continue;
+        await fetchAndCacheIcon(source, page); updated++;
+      } catch (error) { failures.push({ domain: page, message: errorMessage(error) }); }
     }
+    if (updated) renderShortcuts();
+    return { updated, failures, permissionDenied: false };
   }
-  if (updated > 0) {
-    renderShortcuts();
-  }
-  return { updated, failures, permissionDenied: false };
 }
-
-function reportIconSync(source: IconSource, report: IconSyncReport): void {
-  if (report.permissionDenied) {
-    notify(`尚未授权${ICON_SOURCES[source].label}。请点击“按当前来源重新获取图标”并允许权限。`);
-    return;
-  }
+function reportIconSync(report: IconSyncReport): void {
   for (const failure of report.failures) console.warn(`获取 ${failure.domain} 的图标失败：${failure.message}`);
   if (!report.failures.length) {
-    if (report.updated) notify(`已获取并缓存 ${report.updated} 个网站图标。`);
+    notify(report.updated ? `已补全并缓存 ${report.updated} 个网站图标。` : '已有图标缓存已复用，无需重新获取。');
     return;
   }
-  const details = report.failures.slice(0, 2).map(({ domain, message }) => `${domain}：${message}`).join('；');
-  const remaining = report.failures.length > 2 ? `，另有 ${report.failures.length - 2} 个失败，详情见控制台` : '';
-  notify(`图标获取成功 ${report.updated} 个，失败 ${report.failures.length} 个。${details}${remaining}`);
-}
-
-async function changeIconSource(): Promise<void> {
-  const source = settings.iconSource;
-  const permissionRequest = requestIconPermission(source);
-  try {
-    const granted = await permissionRequest;
-    renderShortcuts();
-    await persist();
-    if (!granted) {
-      notify(`${ICON_SOURCES[source].label} 未获权限，仍使用本地缓存或首字母。`);
-      return;
-    }
-    reportIconSync(source, await syncShortcutIcons());
-  } catch (error) {
-    notify(`切换图标来源失败：${errorMessage(error)}`);
-    return;
-  }
+  notify(`图标获取成功 ${report.updated} 个，失败 ${report.failures.length} 个。详情见控制台。`);
 }
 
 async function refreshIcons(): Promise<void> {
-  const source = settings.iconSource;
   if (!settings.shortcuts.length) {
     notify('请先添加快捷方式，再获取网站图标。');
     return;
   }
-  const permissionRequest = requestIconPermission(source);
   try {
-    if (!(await permissionRequest)) {
-      notify(`${ICON_SOURCES[source].label} 未获权限，图标保持本地缓存或首字母回退。`);
-      return;
-    }
-    await clearIconCache(source);
-    renderShortcuts();
-    reportIconSync(source, await syncShortcutIcons());
+    reportIconSync(await syncShortcutIcons());
   } catch (error) {
     notify(`重新获取图标失败：${errorMessage(error)}`);
   }
@@ -2873,7 +2839,7 @@ async function submitShortcut(event: SubmitEvent): Promise<void> {
   closeShortcutEditor();
   notify(existing ? '快捷方式已更新。' : '快捷方式已添加。');
   void syncShortcutIcons()
-    .then((report) => reportIconSync(settings.iconSource, report))
+    .then((report) => reportIconSync(report))
     .catch((error: unknown) => notify(`同步网站图标失败：${errorMessage(error)}`));
 }
 
@@ -2922,13 +2888,14 @@ function reorderShortcut(fromId: string, toId: string): void {
 
 async function exportBackup(): Promise<void> {
   try {
-    const source = settings.iconSource;
     const icons: Record<string, { type: string; data: string }> = {};
     for (const shortcut of settings.shortcuts) {
       const domain = normalizedDomain(shortcut.url);
-      if (!domain || icons[domain]) continue;
-      const asset = await getCachedIcon(source, domain);
-      if (asset) icons[domain] = { type: asset.type, data: await blobToDataUrl(asset.blob) };
+      if (!domain) continue;
+      const key = iconCacheId(settings.iconSource, domain);
+      if (icons[key]) continue;
+      const asset = await getCachedIcon(settings.iconSource, domain);
+      if (asset) icons[key] = { type: asset.type, data: await blobToDataUrl(asset.blob) };
     }
     const backup = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
@@ -2961,7 +2928,7 @@ async function importBackup(file: File): Promise<void> {
     const importedShortcuts: Shortcut[] = [];
     for (const entry of backup.settings.shortcuts) {
       const domain = normalizedDomain(entry.url);
-      const icon = domain ? backup.icons[domain] : undefined;
+      const icon = domain ? backup.icons[iconCacheId(backup.settings.iconSource, domain)] ?? backup.icons[`icon:domestic:${domain}`] ?? backup.icons[`icon:international:${domain}`] ?? backup.icons[domain] ?? backup.icons[new URL(domain).hostname] : undefined;
       if (icon && domain) {
         const blob = dataUrlToBlob(icon.data, icon.type);
         const asset: MediaAsset = {
@@ -3035,7 +3002,6 @@ function validateBackup(value: unknown): BackupData {
     }
     icons[key] = { type: icon.type, data: icon.data };
   }
-  const iconSource: IconSource = record.settings.iconSource === 'international' ? 'international' : 'domestic';
   const searchEngine = SEARCH_ENGINES.some((engine) => engine.id === record.settings!.searchEngine)
     ? record.settings!.searchEngine as SearchEngineId
     : DEFAULT_SETTINGS.searchEngine;
@@ -3058,7 +3024,7 @@ function validateBackup(value: unknown): BackupData {
       wallpaperConfigPath: typeof record.settings.wallpaperConfigPath === 'string'
         ? record.settings.wallpaperConfigPath.slice(0, 500)
         : '',
-      iconSource,
+      iconSource: 'auto',
       searchEngine,
       controlsCollapsed: record.settings.controlsCollapsed === true,
       mediaListCollapsed: record.settings.mediaListCollapsed === true,

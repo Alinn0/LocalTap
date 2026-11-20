@@ -21,6 +21,8 @@
           <label class="sr-only" for="search-input">搜索引擎搜索</label>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.2 4.2"/></svg>
           <input id="search-input" type="search" placeholder="搜索网络，按 Enter" autocomplete="off" />
+          <label class="sr-only" for="search-engine">搜索引擎</label>
+          <select id="search-engine" class="search-engine" aria-label="搜索引擎"></select>
           <span class="search-hint">↵</span>
         </form>
         <div id="shortcuts" class="shortcuts" aria-label="快捷方式"></div>
@@ -115,33 +117,18 @@
       <section class="panel-section">
         <div class="section-heading"><div><h2>快捷方式</h2><p id="shortcut-count" class="muted">0 / 18</p></div><button id="add-shortcut" class="small-button" type="button">＋ 添加</button></div>
         <div id="shortcut-manager" class="item-list"></div>
-        <label class="field-row icon-source-row" for="icon-source">
-          <span>图标来源</span>
-          <select id="icon-source">
-            <option value="domestic">国内源 · 百度</option>
-            <option value="international">国际源 · Google</option>
-          </select>
-        </label>
-        <p class="source-note">图标按所选来源联网获取：百度/Google 会收到快捷方式的域名。结果缓存于本机，失败时显示首字母。首次使用需授权。</p>
-        <button id="refresh-icons" class="small-button" type="button">按当前来源重新获取图标</button>
-      </section>
-
-      <section class="panel-section">
-        <div class="section-heading"><div><h2>搜索</h2><p class="muted">选择搜索框使用的搜索引擎</p></div></div>
-        <label class="field-row" for="search-engine">
-          <span>搜索引擎</span>
-          <select id="search-engine"></select>
-        </label>
+        <button id="authorize-icons" class="small-button" type="button">授权获取图标</button>
+        <button id="refresh-icons" class="small-button" type="button">补全缺失</button>
       </section>
 
       <section class="panel-section backup-section">
-        <div class="section-heading">        <div><h2>配置备份</h2><p class="muted">导出快捷方式、设置与图标缓存，不包含媒体文件</p></div></div>
+        <div class="section-heading">        <div><h2>配置备份</h2><p class="muted">导出快捷方式与设置，不包含媒体文件</p></div></div>
         <div class="button-row">
           <button id="export-backup" class="secondary-button" type="button">导出 JSON</button>
           <label class="secondary-button import-button">导入 JSON<input id="import-backup" type="file" accept="application/json,.json" /></label>
         </div>
       </section>
-      <p class="privacy-note">本地优先 · 图标联网为可选 · 媒体数据留在本机</p>
+      <p class="privacy-note">本地优先 · 媒体数据留在本机</p>
     </aside>
 
     <dialog id="shortcut-dialog" class="editor-dialog">

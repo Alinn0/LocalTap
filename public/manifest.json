@@ -7,15 +7,11 @@
     "newtab": "index.html"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "favicon"
   ],
   "host_permissions": [
     "file:///*"
-  ],
-  "optional_host_permissions": [
-    "https://www.google.com/*",
-    "https://*.gstatic.com/*",
-    "https://favicon.baidubce.com/*"
   ],
   "sandbox": {
     "pages": [
@@ -23,6 +19,10 @@
     ]
   },
   "content_security_policy": {
-    "sandbox": "sandbox allow-scripts; default-src 'self' blob: data:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; object-src 'self';"
-  }
+    "sandbox": "sandbox allow-scripts; default-src 'self' blob: data:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self' http: https:; object-src 'self';"
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
 }

@@ -1,5 +1,7 @@
 import type { PropertyValue, SceneInstance } from 'webwallgl';
 
+type AlignedScene = SceneInstance & { setCoverAlign(x: number, y: number): void | Promise<void> };
+
 type PointerState = { u: number; v: number; buttons: number; mods: number };
 
 type RendererMessage =
@@ -18,7 +20,7 @@ let paused = false;
 let initialFrameCaptured = false;
 let pendingPlaybackState: { token: string; paused: boolean } | undefined;
 let lastPointer: PointerState | undefined;
-let scene: SceneInstance | undefined;
+let scene: AlignedScene | undefined;
 let currentProperties: Record<string, PropertyValue> = {};
 /** 画面位置：-100…100，0 为居中。内容比视口大时用它微调取景（X 水平 / Y 垂直）。 */
 let currentViewX = 0;
@@ -102,7 +104,17 @@ async function loadScene(message: Extract<RendererMessage, { type: 'load' }>): P
       instance.destroy({ releasePkgCache: true });
       return;
     }
-    scene = instance;
+    const aligned = instance as AlignedScene;
+    if (typeof aligned.setCoverAlign !== 'function') {
+      instance.destroy({ releasePkgCache: true });
+      throw new Error('Scene view adapter missing; rebuild LocalTab.');
+    }
+    const setFit = instance.setFit.bind(instance);
+    instance.setFit = (fit) => {
+      setFit(fit);
+      if (scene === aligned) applyView();
+    };
+    scene = aligned;
     applyView();
     if (lastPointer) instance.pushPointer(lastPointer.u, lastPointer.v, lastPointer.buttons, lastPointer.mods);
     parent.postMessage({ type: 'scene-ready', token: currentToken }, '*');
@@ -157,32 +169,23 @@ function detectRefreshRate(): Promise<number> {
   return refreshRatePromise;
 }
 
-/**
- * 画面位置调整：把引擎画布按固定倍率放大，再在放大产生的余量里平移，
- * 这样平移时不会露出空白边缘。X / Y 各自独立，均可调（WE 客户端只能调 X）。
- */
-const VIEW_OVERSCAN = 0.24;
-
+/** Map -100..100 to the complete cover crop, without resizing the canvas. */
 function clampViewOffset(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
   return Math.max(-100, Math.min(100, Math.round(value)));
 }
 
 function applyView(): void {
-  const canvas = scene?.canvas;
-  if (!canvas) return;
-  const overscan = VIEW_OVERSCAN * 100;
-  const size = `${Math.round((1 + VIEW_OVERSCAN) * 100)}%`;
-  // -100 → 0%（贴左/上），0 → 一半余量（居中），100 → 全部余量（贴右/下）。
-  const left = (overscan * (currentViewX + 100)) / 200;
-  const top = (overscan * (currentViewY + 100)) / 200;
-  canvas.style.width = size;
-  canvas.style.height = size;
-  canvas.style.left = `-${left.toFixed(2)}%`;
-  canvas.style.top = `-${top.toFixed(2)}%`;
+  const instance = scene;
+  if (!instance) return;
+  void Promise.resolve(instance.setCoverAlign(
+    (currentViewX + 100) / 200,
+    (currentViewY + 100) / 200,
+  )).catch((error: unknown) => {
+    if (scene === instance) console.warn('Scene view refresh failed', error);
+  });
 }
 
-/** 视图尺寸变化后引擎会重设画布属性，这里补回位置样式。 */
 window.addEventListener('resize', () => applyView());
 
 async function sendPreview(instance: SceneInstance, token: string): Promise<void> {

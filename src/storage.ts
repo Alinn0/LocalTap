@@ -27,7 +27,7 @@ function normalizeSettings(value: unknown): AppSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...candidate,
-    shortcuts: Array.isArray(candidate.shortcuts) ? candidate.shortcuts.slice(0, 18) : [],
+    shortcuts: Array.isArray(candidate.shortcuts) ? candidate.shortcuts.slice(0, 18).map(({ id, name, url }) => ({ id, name, url })) : [],
     playbackMode: ['random', 'order', 'fixed'].includes(candidate.playbackMode ?? '')
       ? candidate.playbackMode!
       : DEFAULT_SETTINGS.playbackMode,
@@ -39,7 +39,7 @@ function normalizeSettings(value: unknown): AppSettings {
     previousWallpaperEngineId: typeof candidate.previousWallpaperEngineId === 'string' ? candidate.previousWallpaperEngineId : null,
     wallpaperConfigName: typeof candidate.wallpaperConfigName === 'string' ? candidate.wallpaperConfigName.slice(0, 200) : '',
     wallpaperConfigPath: typeof candidate.wallpaperConfigPath === 'string' ? candidate.wallpaperConfigPath.slice(0, 500) : '',
-    iconSource: candidate.iconSource === 'international' ? 'international' : 'domestic',
+    iconSource: 'auto',
     searchEngine: SEARCH_ENGINES.some((engine) => engine.id === candidate.searchEngine)
       ? candidate.searchEngine!
       : DEFAULT_SETTINGS.searchEngine,

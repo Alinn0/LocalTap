@@ -36,13 +36,45 @@ body.interaction-dismissed .search { border-color: rgba(255,255,255,.13); backgr
 .search input { min-width: 0; flex: 1; color: #fff; border: 0; outline: 0; background: transparent; font-size: 14px; }
 .search input::placeholder { color: rgba(255,255,255,.62); }
 .search-hint { color: rgba(255,255,255,.55); font-size: 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 5px; padding: 1px 6px; }
+.search-engine {
+  max-width: 112px;
+  min-width: 88px;
+  appearance: none;
+  color: rgba(255,255,255,.82);
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 10px;
+  outline: 0;
+  padding: 7px 26px 7px 10px;
+  background:
+    linear-gradient(45deg, transparent 50%, rgba(255,255,255,.72) 50%) calc(100% - 13px) 50% / 5px 5px no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,.72) 50%, transparent 50%) calc(100% - 9px) 50% / 5px 5px no-repeat,
+    rgba(255,255,255,.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.13), 0 8px 22px rgba(0,0,0,.12);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  color-scheme: dark;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.search-engine:hover, .search-engine:focus-visible {
+  border-color: rgba(255,255,255,.5);
+  background:
+    linear-gradient(45deg, transparent 50%, #fff 50%) calc(100% - 13px) 50% / 5px 5px no-repeat,
+    linear-gradient(135deg, #fff 50%, transparent 50%) calc(100% - 9px) 50% / 5px 5px no-repeat,
+    rgba(255,255,255,.17);
+  box-shadow: 0 8px 25px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.18);
+}
+.search-engine option { color: #fff; background: #202633; }
 .shortcuts { display: flex; flex-wrap: wrap; justify-content: center; gap: 17px 15px; }
 .shortcut-tile { width: 88px; display: flex; flex-direction: column; align-items: center; gap: 9px; color: #fff; text-decoration: none; outline-offset: 5px; }
-.shortcut-icon { width: 54px; height: 54px; display: grid; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 18px; background: rgba(255,255,255,.06); backdrop-filter: blur(2px); font-size: 20px; font-weight: 600; transition: transform .2s, background .2s, border-color .2s, backdrop-filter .2s, box-shadow .2s; }
+.shortcut-icon { width: 54px; height: 54px; display: grid; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 18px; background: rgba(255,255,255,.06); backdrop-filter: blur(2px); font-size: 20px; font-weight: 600; opacity: 0; transition: opacity .2s, transform .2s, background .2s, border-color .2s, backdrop-filter .2s, box-shadow .2s; }
 .shortcut-icon img { width: 72%; height: 72%; object-fit: contain; border-radius: 7px; background: rgba(255,255,255,.94); box-shadow: 0 1px 3px rgba(0,0,0,.2); }
-.shortcut-tile:hover .shortcut-icon, .shortcut-tile:focus-visible .shortcut-icon, body.interaction-hover .shortcut-icon, body.interaction-focus .shortcut-icon, body.interaction-pinned .shortcut-icon { transform: translateY(-3px); border-color: rgba(255,255,255,.56); background: rgba(10,13,20,.82); backdrop-filter: blur(14px); box-shadow: 0 10px 32px rgba(0,0,0,.3); }
+.shortcut-tile:hover .shortcut-icon, .shortcut-tile:focus-visible .shortcut-icon, body.interaction-hover .shortcut-icon, body.interaction-focus .shortcut-icon, body.interaction-pinned .shortcut-icon { opacity: 1; transform: translateY(-3px); border-color: rgba(255,255,255,.56); background: rgba(10,13,20,.82); backdrop-filter: blur(14px); box-shadow: 0 10px 32px rgba(0,0,0,.3); }
 body.interaction-dismissed .shortcut-tile:hover .shortcut-icon, body.interaction-dismissed .shortcut-tile:focus-visible .shortcut-icon, body.interaction-dismissed .shortcut-icon { transform: none; border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.06); backdrop-filter: blur(2px); box-shadow: none; }
-.shortcut-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; text-shadow: 0 1px 5px rgba(0,0,0,.5); }
+.shortcut-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; text-shadow: 0 1px 5px rgba(0,0,0,.5); opacity: 0; transition: opacity .2s; }
+.shortcut-tile:hover .shortcut-label, .shortcut-tile:focus-visible .shortcut-label, body.interaction-hover .shortcut-label, body.interaction-focus .shortcut-label, body.interaction-pinned .shortcut-label { opacity: 1; }
+body.interaction-dismissed .shortcut-icon, body.interaction-dismissed .shortcut-label { opacity: 0; }
 .welcome { color: rgba(255,255,255,.7); font-size: 13px; margin: 0; }
 .footer { position: fixed; z-index: 3; left: 4.4vw; bottom: 22px; display: flex; align-items: center; gap: 8px; padding: 6px; border: 1px solid rgba(255,255,255,.14); border-radius: 16px; background: rgba(18,22,29,.26); backdrop-filter: blur(14px); color: rgba(255,255,255,.68); font-size: 12px; transition: background .2s ease; }
 .footer:hover { background: rgba(18,22,29,.46); }
@@ -108,7 +140,8 @@ body.interaction-dismissed .shortcut-tile:hover .shortcut-icon, body.interaction
 .media-properties { color: #ff9c6e; font-size: 14px; }
 .media-properties:hover:not(:disabled) { background: rgba(255,106,61,.2); color: #ffd0b8; }
 .field-row { display: flex; justify-content: space-between; align-items: center; padding-top: 14px; font-size: 11px; }
-.field-row select { border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 7px 10px; background: #242a35; color: #fff; outline: none; font-size: 11px; }
+.field-row select { border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 7px 10px; background: rgba(255,255,255,.08); color: #fff; outline: none; font-size: 11px; }
+.field-row select option { color: #fff; background: #202633; }
 .field-row input[type="number"] { width: 82px; border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 7px 10px; background: #242a35; color: #fff; outline: none; font-size: 11px; }
 .field-row input[type="number"]:disabled { opacity: .5; }
 .source-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }

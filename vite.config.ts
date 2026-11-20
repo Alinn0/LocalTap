@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite';
+import { coverAlignPlugin } from './build/webwallgl-align.ts';
 
 export default defineConfig({
   base: './',
+  plugins: [coverAlignPlugin()],
+  optimizeDeps: { exclude: ['webwallgl'] },
   server: {
     cors: { origin: '*' },
   },
